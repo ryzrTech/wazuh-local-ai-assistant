@@ -1,6 +1,6 @@
 # Wazuh local AI assistant
 
-Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSearch Dashboards plugin provides a chat sidebar and an AI investigations page. It can read selected alerts, raw events, agents, and SCA results through the signed-in user's permissions. It does not run autonomous investigations, change Wazuh configuration, or execute security responses.
+Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSearch Dashboards plugin provides a chat sidebar and an AI investigations page. Chat can request bounded read-only searches of alerts, raw events, agents, and SCA results through the signed-in user's permissions. It does not change Wazuh configuration or execute security responses.
 
 ## Milestone status
 
@@ -8,10 +8,10 @@ Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSea
 | --- | --- |
 | 1. Discovery and architecture | Complete for the observed Wazuh 4.14.9 host; deployment-specific findings stay in private operator documentation. |
 | 2. AI sidebar | Installed on a Wazuh 4.14.9 test host. The sidebar includes provider setup and per-user history controls. Model chat was validated by the operator. |
-| 3. Read-only Wazuh investigations | Initial alert, archive, agent, and SCA views implemented; interactive Dashboard verification pending. |
+| 3. Read-only Wazuh investigations | Alert, archive, agent, and SCA views plus model-directed read tools implemented; authenticated UI verification pending. |
 | 4. Agent/SCA proposal validation | A bounded group-settings form produces an exact diff and runs Wazuh's native syntax validator. No apply path or endpoint scan is automated. |
 | 5. First detection and delivery policy | A tested level-12 SSH root-login rule is installed on the test host. Alert delivery is configurable in the assistant settings, with Dashboard only as the default and an optional HTTPS webhook. |
-| 6. Continuous triage and remediation | Planned; no automatic response or Wazuh configuration apply path is implemented. |
+| 6. Continuous triage and remediation | Planned; interactive chat tools are read-only, with no background triage, automatic response, or configuration apply path. |
 
 ## Run the isolated preview
 
@@ -38,7 +38,7 @@ Run the tests with `python3 -m unittest discover -s tests -v`. The tests simulat
 - `alerting/`: bounded webhook dispatcher with a private retry queue; `rules/` contains the tested custom detection rule.
 - `docs/`: architecture, compatibility, security, API, deployment, rollback, and test notes.
 
-The project has no runtime third-party Python dependencies. Its isolated preview uses plain HTML, CSS, and JavaScript. The native source uses OpenSearch Dashboards' shared React and EUI packages and resolves user identity through the indexer's current-user security endpoint. Each user can delete conversations and set a 7, 30, 90, or 365-day retention period, or keep them until deletion. The new investigations page still needs an authenticated browser check.
+The project has no runtime third-party Python dependencies. Its isolated preview uses plain HTML, CSS, and JavaScript. The native source uses OpenSearch Dashboards' shared React and EUI packages and resolves user identity through the indexer's current-user security endpoint. Chat tools run in that authenticated Dashboard request path, return source references, and write a bounded private audit entry. Each user can delete conversations and set a 7, 30, 90, or 365-day retention period, or keep them until deletion. The operator should review the updated UI in their own authenticated session.
 
 ## License
 

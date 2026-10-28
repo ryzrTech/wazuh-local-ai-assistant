@@ -1,7 +1,9 @@
 import { createHash } from 'crypto';
 import { IncomingMessage, request as httpRequest } from 'http';
+import { PassThrough } from 'stream';
 import { schema } from '@osd/config-schema';
 import { CoreSetup, Plugin, PluginInitializerContext } from 'opensearch_dashboards/server';
+import { capabilities, executeReadTool } from './read_tools';
 
 const PREFIX = '/api/wazuh_local_ai';
 const SESSION_ID = /^[a-f0-9-]{36}$/;
@@ -116,6 +118,85 @@ function adminAllowed(identity: { roles: unknown[] }) {
   return identity.roles.some((role: unknown) => typeof role === 'string' && allowed.has(role));
 }
 
+async function proxyJson(method: 'GET' | 'POST', path: string, owner: string, payload?: unknown): Promise<{ status: number; data: any }> {
+  const upstream = await proxy(method, path, owner, payload);
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of upstream.body) {
+    size += chunk.length;
+    if (size > 131072) { upstream.body.destroy(); throw new Error('Assistant response exceeded limit'); }
+    chunks.push(chunk);
+  }
+  let data: any;
+  try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw new Error('Invalid assistant response'); }
+  return { status: upstream.status, data };
+}
+
+function sendEvent(stream: PassThrough, event: string, data: unknown) {
+  stream.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+async function chatWithTools(context: any, owner: string, admin: boolean, sessionId: string, content: string, stream: PassThrough) {
+  const allowed = new Set(['get_capabilities', 'search_alerts', 'search_raw_events', 'get_agent', 'get_sca_results']);
+  try {
+    const prepared = await proxyJson('POST', `/api/sessions/${sessionId}/turn`, owner, { content });
+    if (prepared.status !== 200 || !Array.isArray(prepared.data.messages)) throw new Error('Could not prepare chat');
+    const messages: any[] = prepared.data.messages;
+    let callsUsed = 0;
+    for (let round = 0; round < 3; round++) {
+      const completion = await proxyJson('POST', '/api/model/complete', owner, { messages });
+      if (completion.status !== 200) throw new Error('Model unavailable');
+      const turn = completion.data;
+      if (typeof turn.content !== 'string' || !Array.isArray(turn.tool_calls)) throw new Error('Invalid model turn');
+      if (!turn.tool_calls.length) {
+        if (!turn.content.trim() || turn.content.length > 16000) throw new Error('Empty or oversized model answer');
+        const saved = await proxyJson('POST', `/api/sessions/${sessionId}/assistant`, owner, { content: turn.content });
+        if (saved.status !== 200) throw new Error('Could not save answer');
+        sendEvent(stream, 'delta', { text: turn.content });
+        sendEvent(stream, 'done', { message: turn.content });
+        stream.end();
+        return;
+      }
+      if (round === 2 || callsUsed + turn.tool_calls.length > 4) throw new Error('Tool call limit reached');
+      messages.push({ role: 'assistant', content: turn.content, tool_calls: turn.tool_calls });
+      for (const call of turn.tool_calls) {
+        const name = call?.function?.name;
+        const id = call?.id;
+        if (typeof name !== 'string' || !allowed.has(name) || typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+          throw new Error('Unsupported model tool call');
+        }
+        callsUsed++;
+        const started = Date.now();
+        let status: 'ok' | 'denied' | 'error' = 'ok';
+        let argumentsForAudit: Record<string, unknown> = {};
+        let count = 0;
+        let result: any;
+        try {
+          const executed = await executeReadTool(context, name, call.function.arguments, admin, managerRead);
+          argumentsForAudit = executed.arguments;
+          count = executed.count;
+          result = executed.data;
+          if (JSON.stringify(result).length > 12000) throw new Error('Tool result exceeded limit');
+        } catch (error) {
+          status = (error as any)?.statusCode === 401 || (error as any)?.statusCode === 403 ? 'denied' : 'error';
+          result = { error: status === 'denied' ? 'Source permission denied' : 'Tool unavailable or invalid arguments' };
+        }
+        const audit = await proxyJson('POST', `/api/sessions/${sessionId}/tool-audit`, owner, {
+          name, arguments: argumentsForAudit, status, count, duration_ms: Math.min(180000, Date.now() - started),
+        });
+        if (audit.status !== 200) throw new Error('Tool audit unavailable');
+        sendEvent(stream, 'tool', { name, status, count });
+        messages.push({ role: 'tool', tool_call_id: id, name, content: JSON.stringify(result) });
+      }
+    }
+    throw new Error('Model did not finish');
+  } catch {
+    sendEvent(stream, 'error', { error: 'Assistant request failed. Your message may have been saved; check the conversation before retrying.' });
+    stream.end();
+  }
+}
+
 function conciseSource(source: any) {
   return {
     timestamp: source.timestamp,
@@ -167,6 +248,13 @@ export class LocalAiServerPlugin implements Plugin {
       };
 
     router.get({ path: PREFIX + '/models', validate: false }, handle('GET', '/models', () => '/api/models'));
+    router.get({ path: PREFIX + '/capabilities', validate: false }, async (context: any, _request: any, response: any) => {
+      try {
+        const identity = await currentIdentity(context);
+        if (!identity) return response.unauthorized();
+        return response.ok({ body: capabilities(adminAllowed(identity)) });
+      } catch { return response.customError({ statusCode: 503, body: { message: 'Capabilities unavailable' } }); }
+    });
     router.get({ path: PREFIX + '/sessions', validate: false }, handle('GET', '/sessions', () => '/api/sessions'));
     router.post({ path: PREFIX + '/sessions', validate: { body: schema.object({}) } }, handle('POST', '/sessions', () => '/api/sessions'));
     router.delete({ path: PREFIX + '/sessions', validate: false }, handle('DELETE', '/sessions', () => '/api/sessions'));
@@ -213,10 +301,19 @@ export class LocalAiServerPlugin implements Plugin {
     router.post({ path: PREFIX + '/sessions/{id}/messages', validate: {
       params: schema.object({ id: schema.string() }),
       body: schema.object({ content: schema.string({ minLength: 1, maxLength: 4000 }) }),
-    } }, handle('POST', '/messages', (request) => {
-      if (!SESSION_ID.test(request.params.id)) throw new Error('invalid session');
-      return `/api/sessions/${request.params.id}/messages`;
-    }));
+    } }, async (context: any, request: any, response: any) => {
+      if (!SESSION_ID.test(request.params.id) || !request.body.content.trim()) return response.badRequest();
+      try {
+        const identity = await currentIdentity(context);
+        if (!identity) return response.unauthorized();
+        const stream = new PassThrough();
+        void chatWithTools(context, identity.owner, adminAllowed(identity), request.params.id, request.body.content, stream);
+        return response.custom({ statusCode: 200, headers: {
+          'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store',
+          'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff',
+        }, body: stream });
+      } catch { return response.customError({ statusCode: 503, body: { message: 'Assistant unavailable' } }); }
+    });
 
     router.get({ path: PREFIX + '/investigations', validate: false },
       handle('GET', '/investigations', () => '/api/investigations'));

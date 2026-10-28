@@ -104,6 +104,8 @@
   line-height: 1.55;
 }
 .wlaMessage strong { display: block; margin-bottom: 5px; color: var(--wla-muted); font-size: 11px; font-weight: 700; }
+.wlaToolTrace { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
+.wlaToolTrace span { padding: 2px 7px; border: 1px solid var(--wla-border); border-radius: 999px; color: var(--wla-accent); background: var(--wla-bg); font-size: 10px; white-space: nowrap; }
 .wla-user { align-self: flex-end; background: var(--wla-user); }
 .wla-assistant { align-self: flex-start; }
 .wlaCompact .wlaTranscript { gap: 9px; }

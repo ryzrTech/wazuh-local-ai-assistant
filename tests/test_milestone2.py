@@ -33,6 +33,14 @@ class FakeProvider(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
+        if request.get("tools"):
+            if any(message.get("role") == "tool" for message in request["messages"]):
+                self.wfile.write(b'data: {"choices":[{"delta":{"content":"Found one matching alert."}}]}\n\n')
+            else:
+                self.wfile.write(b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search_alerts","arguments":"{\\\"hours\\\":24"}}]}}]}\n\n')
+                self.wfile.write(b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\\\"rule_id\\\":\\\"100100\\\"}"}}]}}]}\n\n')
+            self.wfile.write(b'data: [DONE]\n\n')
+            return
         self.wfile.write(b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n')
         self.wfile.flush()
         self.wfile.write(b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n')
@@ -168,6 +176,31 @@ class Milestone2Tests(unittest.TestCase):
         self.assertIn("wazuh-alerts-example/abc", json.dumps(FakeProvider.last_request["messages"]))
         self.assertEqual(self.request("DELETE", f"/api/sessions/{sid}")[0], 200)
         self.assertEqual(self.request("GET", f"/api/investigations/{sid}")[0], 404)
+
+    def test_tool_turn_and_audit_are_owner_scoped(self):
+        sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]
+        status, body = self.request("POST", f"/api/sessions/{sid}/turn", {"content": "Show recent root SSH logins"})
+        self.assertEqual(status, 200)
+        messages = json.loads(body)["messages"]
+        self.assertIn("read-only tools", messages[0]["content"])
+        self.assertEqual(messages[-1], {"role": "user", "content": "Show recent root SSH logins"})
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/turn", {"content": "test"}, owner="other")[0], 404)
+        status, body = self.request("POST", "/api/model/complete", {"messages": messages})
+        self.assertEqual(status, 200)
+        call = json.loads(body)["tool_calls"][0]
+        self.assertEqual(call["function"]["name"], "search_alerts")
+        self.assertEqual(json.loads(call["function"]["arguments"]), {"hours": 24, "rule_id": "100100"})
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/tool-audit", {
+            "name": "search_alerts", "arguments": {"hours": 24}, "status": "ok", "count": 1, "duration_ms": 12,
+        }, owner="other")[0], 404)
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/tool-audit", {
+            "name": "search_alerts", "arguments": {"hours": 24}, "status": "ok", "count": 1, "duration_ms": 12,
+        })[0], 200)
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/assistant", {"content": "Found one matching alert."})[0], 200)
+        self.assertEqual(self.request("GET", f"/api/sessions/{sid}/messages")[0], 200)
+        self.assertEqual(self.request("DELETE", f"/api/sessions/{sid}")[0], 200)
+        with sqlite3.connect(self.db_path) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM tool_audit").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

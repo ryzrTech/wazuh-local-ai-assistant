@@ -7,7 +7,7 @@ import investigationsCss from './investigations.css';
 import { Investigations } from './investigations';
 
 type Session = { id: string; title: string };
-type ChatMessage = { role: 'user' | 'assistant'; content: string };
+type ChatMessage = { role: 'user' | 'assistant'; content: string; tools?: Array<{ name: string; status: string; count: number }> };
 
 function Assistant({ core }: { core: CoreStart }) {
   const [open, setOpen] = useState(false);
@@ -229,6 +229,12 @@ function Assistant({ core }: { core: CoreStart }) {
             return copy;
           });
           if (event === 'done') completed = true;
+          if (event === 'tool') setMessages((current) => {
+            const copy = [...current];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, tools: [...(last.tools || []), payload] };
+            return copy;
+          });
           if (event === 'error') throw new Error(payload.error);
         }
       }
@@ -358,10 +364,13 @@ function Assistant({ core }: { core: CoreStart }) {
           {messages.length === 0 ? <div className="wlaEmpty">
             <span className="wlaEmptyMark" aria-hidden="true">✦</span>
             <h3>How can I help?</h3>
-            <p>Ask about a security concept or start a new conversation.</p>
+            <p>Ask me to search Wazuh alerts, raw events, agents, or SCA results.</p>
           </div> : messages.map((item, index) =>
             <article key={index} className={'wlaMessage wla-' + item.role}>
               <strong>{item.role === 'user' ? 'You' : 'Assistant'}</strong>
+              {!!item.tools?.length && <div className="wlaToolTrace" aria-label="Wazuh tools used">
+                {item.tools.map((tool, toolIndex) => <span key={toolIndex}>{tool.name.replace(/_/g, ' ')} · {tool.status === 'ok' ? `${tool.count} result${tool.count === 1 ? '' : 's'}` : tool.status}</span>)}
+              </div>}
               <div>{item.content || (busy ? <EuiLoadingSpinner size="s" /> : '')}</div>
             </article>)}
         </div>
@@ -377,7 +386,7 @@ function Assistant({ core }: { core: CoreStart }) {
               <EuiButton className="wlaSend" size="s" fill onClick={send} isLoading={busy}>Send</EuiButton>
             </div>
           </div>
-          <p className="wlaScope">Read only chat · Use AI investigations for selected Wazuh evidence</p>
+          <p className="wlaScope">Read-only Wazuh tools · Results follow your signed-in permissions</p>
         </div>
       </>}
     </aside>, document.body) : null;

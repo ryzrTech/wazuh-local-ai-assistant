@@ -18,12 +18,16 @@ All routes except `/health` require `X-Assistant-Token` and `X-Assistant-User` i
 | `GET /api/investigations` | Lists owner-scoped saved investigations. |
 | `POST /api/investigations` | Creates a saved investigation from server-verified evidence. |
 | `GET /api/investigations/{id}` | Returns the owner-scoped evidence snapshot. |
+| `POST /api/sessions/{id}/turn` | Internal: saves a user message and returns bounded model context for the Dashboard tool broker. |
+| `POST /api/model/complete` | Internal: returns one streamed-provider turn, including bounded function calls. |
+| `POST /api/sessions/{id}/tool-audit` | Internal: saves owner-scoped tool metadata without returned log bodies. |
+| `POST /api/sessions/{id}/assistant` | Internal: saves the final assistant reply after tool execution. |
 | `GET /api/sessions/{id}/messages` | Up to 200 owner-scoped messages. |
 | `POST /api/sessions/{id}/messages` | JSON `{ "content": "..." }`; streams `delta`, `done`, or `error` SSE events. |
 
 Error responses contain generic messages. Model provider errors do not reveal response bodies or credentials. A failed model call saves the user's message but not a partial assistant answer.
 
-The Dashboard plugin adds fixed, user-scoped read routes for recent alerts, raw events, agents, and SCA results. It resolves exact source IDs before creating an investigation; callers cannot supply arbitrary evidence through the browser route.
+The Dashboard plugin adds fixed, user-scoped read routes for recent alerts, raw events, agents, and SCA results. It resolves exact source IDs before creating an investigation; callers cannot supply arbitrary evidence through the client route. `GET /api/wazuh_local_ai/capabilities` returns the server-derived read-tool and policy capability list. The normal chat POST route now runs a bounded model/tool loop in Dashboard's authenticated request context; the loopback model service does not access Wazuh directly. Tool results are capped and cited, and each call writes private audit metadata.
 
 `POST /api/wazuh_local_ai/policies/agent-sca/validate` is a Dashboard route for administrators. It accepts an agent ID, one of that agent's groups, and four enumerated SCA settings. The plugin checks group membership through Wazuh Core, then forwards the bounded request to a separate loopback service on port 8766 using `ASSISTANT_POLICY_TOKEN`. That service exposes `GET /health` and authenticated `POST /validate`; it returns a diff, active-file hash, native validator result, and `applied: false`. There is no policy apply route.
 

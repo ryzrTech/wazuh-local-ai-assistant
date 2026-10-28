@@ -6,4 +6,4 @@ Run the service as an unprivileged account, bind it to `127.0.0.1`, and put the 
 
 Back up the SQLite file while the service is stopped, or use SQLite's online backup API. Back up the provider config file separately and restrict it to the service account. User-selected retention is applied immediately and checked hourly. Users can delete one conversation or all of their own history from the sidebar settings. Restore the database and matching service configuration together. The service currently has no migration framework; preserve a copy before changing schema in later milestones.
 
-The native Dashboard proxy is installed on the first test host. Wazuh tools, background queue, rule staging, and response executor are still absent. There is no AI-originated Wazuh action path to disable.
+The native Dashboard proxy and read-only chat tools are installed on the first test host. The tool audit is in the private chat SQLite database; inspect it without exposing returned logs or credentials. The background triage queue, reviewed policy apply path, and response executor are still absent. There is no AI-originated Wazuh action path to disable.

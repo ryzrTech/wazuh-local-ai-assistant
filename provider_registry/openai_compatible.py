@@ -140,6 +140,76 @@ class Provider:
         finally:
             conn.close()
 
+    def complete_with_tools(self, messages, tools):
+        """Collect one bounded streamed assistant turn, including function calls."""
+        if not self.model:
+            raise ProviderError("No model selected")
+        parsed, conn = self._connection()
+        body = json.dumps({
+            "model": self.model, "messages": messages, "tools": tools,
+            "tool_choice": "auto", "stream": True, "temperature": 0.2, "max_tokens": 1536,
+        }).encode()
+        if len(body) > 65536:
+            raise ProviderError("Model request exceeded size limit")
+        content, calls, total, done = [], {}, 0, False
+        try:
+            conn.request("POST", parsed.path.rstrip("/") + "/chat/completions", body=body, headers=self._headers())
+            response = conn.getresponse()
+            if response.status != 200:
+                response.read(1024)
+                raise ProviderError(f"Provider returned HTTP {response.status}")
+            if "text/event-stream" not in response.getheader("Content-Type", ""):
+                raise ProviderError("Provider did not return an event stream")
+            while True:
+                line = response.readline(65537)
+                if not line:
+                    break
+                total += len(line)
+                if len(line) > 65536 or total > 4 * 1024 * 1024:
+                    raise ProviderError("Provider response exceeded size limit")
+                if not line.startswith(b"data:"):
+                    continue
+                data = line[5:].strip()
+                if data == b"[DONE]":
+                    done = True
+                    break
+                try:
+                    delta = json.loads(data)["choices"][0]["delta"]
+                except (ValueError, KeyError, IndexError, TypeError):
+                    continue
+                text = delta.get("content")
+                if isinstance(text, str):
+                    content.append(text)
+                    if sum(map(len, content)) > 16000:
+                        raise ProviderError("Answer exceeded size limit")
+                for item in delta.get("tool_calls") or []:
+                    if not isinstance(item, dict) or type(item.get("index")) is not int:
+                        raise ProviderError("Malformed model tool call")
+                    index = item["index"]
+                    if index < 0 or index > 3:
+                        raise ProviderError("Too many model tool calls")
+                    call = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    if isinstance(item.get("id"), str):
+                        call["id"] += item["id"]
+                    function = item.get("function") or {}
+                    if isinstance(function.get("name"), str):
+                        call["function"]["name"] += function["name"]
+                    if isinstance(function.get("arguments"), str):
+                        call["function"]["arguments"] += function["arguments"]
+                    if len(call["id"]) > 128 or len(call["function"]["name"]) > 64 or len(call["function"]["arguments"]) > 2048:
+                        raise ProviderError("Model tool call exceeded size limit")
+            if not done:
+                raise ProviderError("Provider stream ended without completion marker")
+            ordered = [calls[index] for index in sorted(calls)]
+            for call in ordered:
+                if not call["id"] or not call["function"]["name"]:
+                    raise ProviderError("Incomplete model tool call")
+            return {"content": "".join(content), "tool_calls": ordered}
+        except (OSError, ValueError) as exc:
+            raise ProviderError("Provider tool stream failed") from exc
+        finally:
+            conn.close()
+
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     def __init__(self, hostname, ip, port, timeout):
