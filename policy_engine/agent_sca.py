@@ -14,6 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from xml.etree import ElementTree
 
+from policy_engine.proposals import ProposalStore, public_proposal
+
 GROUP_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 VALUES = {
     "enabled": ("yes", "no"),
@@ -96,11 +98,13 @@ def validate(group: str, settings: dict, *, base: Path = Path("/var/ossec/etc/sh
             raise ProposalError("Wazuh validator could not complete") from error
     diff = "".join(difflib.unified_diff(current.splitlines(keepends=True), candidate.splitlines(keepends=True),
                                         fromfile="active agent.conf", tofile="proposed agent.conf"))
+    if len(diff) > 12000:
+        raise ProposalError("Proposal diff is too large for complete review")
     return {
         "group": group,
         "base_sha256": hashlib.sha256(current.encode()).hexdigest(),
         "settings": settings,
-        "diff": diff[:12000],
+        "diff": diff,
         "valid": tested.returncode == 0 and "verify-agent-conf: OK" in tested.stdout,
         "validator_output": (tested.stdout + tested.stderr)[:2000],
         "applied": False,
@@ -120,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path != "/validate":
+        if self.path not in ("/validate", "/proposal", "/proposals"):
             return self.reply(404, {"error": "not found"})
         token = self.headers.get("X-Policy-Token", "")
         if not token or not hmac.compare_digest(token, self.server.token):
@@ -134,7 +138,17 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(size))
             if not isinstance(payload, dict):
                 return self.reply(400, {"error": "invalid request"})
+            if self.path == "/proposal":
+                row = self.server.store.get(payload.get("proposal_id"), payload.get("owner"))
+                return self.reply(200, public_proposal(row)) if row else self.reply(404, {"error": "not found"})
+            if self.path == "/proposals":
+                rows = self.server.store.list_for_agent(payload.get("owner"), payload.get("agent_id"))
+                return self.reply(200, {"proposals": [public_proposal(row) for row in rows]})
             result = validate(payload.get("group"), payload.get("settings"))
+            if result["valid"] and payload.get("owner") is not None:
+                proposal_id = self.server.store.save(payload["owner"], payload.get("agent_id"), result)
+                result["proposal_id"] = proposal_id
+                result["expires_at"] = self.server.store.get(proposal_id, payload["owner"])["expires_at"]
         except ProposalError as error:
             return self.reply(400, {"error": str(error)[:180]})
         except (ValueError, OSError):
@@ -157,6 +171,7 @@ def main():
         raise SystemExit("ASSISTANT_POLICY_TOKEN must be at least 32 characters")
     server = ThreadingHTTPServer(("127.0.0.1", 8766), Handler)
     server.token = token
+    server.store = ProposalStore(os.environ.get("ASSISTANT_POLICY_DB", "/var/lib/wazuh-ai-policies/proposals.sqlite3"))
     server.serve_forever()
 
 

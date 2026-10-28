@@ -7,7 +7,10 @@ type RecordItem = { id: string; index: string; source: any };
 type Agent = { id: string; name: string; status: string; os?: string; group_config_status?: string; groups: string[] };
 type Investigation = { session_id: string; source_type: string; source_ref: string; title: string; updated_at: string };
 type ScaSettings = { enabled: string; scan_on_start: string; skip_nfs: string; interval: string };
-type Proposal = { group: string; base_sha256: string; diff: string; valid: boolean; validator_output: string; scope: string; next_check: string };
+type Proposal = { group: string; base_sha256: string; diff: string; valid: boolean; validator_output: string;
+  scope: string; next_check: string; proposal_id?: string; expires_at?: string; status?: string; applied_at?: string };
+type StoredProposal = { id: string; group_name: string; status: string; created_at: string; applied_at?: string;
+  diff: string; base_sha256: string; validator_output: string; expires_at: string };
 
 export function Investigations({ core }: { core: CoreStart }) {
   const [sourceType, setSourceType] = useState<SourceType>('alert');
@@ -29,6 +32,9 @@ export function Investigations({ core }: { core: CoreStart }) {
   const [scaSettings, setScaSettings] = useState<ScaSettings>({ enabled: 'yes', scan_on_start: 'yes', skip_nfs: 'yes', interval: '12h' });
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [validating, setValidating] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [verification, setVerification] = useState('');
+  const [storedProposals, setStoredProposals] = useState<StoredProposal[]>([]);
 
   const endpoint = (path: string) => core.http.basePath.prepend('/api/wazuh_local_ai' + path);
   async function api(path: string, options: RequestInit = {}) {
@@ -47,7 +53,7 @@ export function Investigations({ core }: { core: CoreStart }) {
   }
 
   async function loadSource(kind: SourceType = sourceType) {
-    setLoading(true); setError(''); setSelectedRecord(null); setSelectedAgent(null); setPolicies([]); setCurrentCase(null); setAnswer(''); setProposal(null);
+    setLoading(true); setError(''); setSelectedRecord(null); setSelectedAgent(null); setPolicies([]); setCurrentCase(null); setAnswer(''); setProposal(null); setVerification(''); setStoredProposals([]);
     try {
       if (kind === 'agent') {
         const data = await api('/agents');
@@ -65,9 +71,24 @@ export function Investigations({ core }: { core: CoreStart }) {
   useEffect(() => { loadCases().catch(() => undefined); loadSource('alert'); }, []);
 
   async function selectAgent(agent: Agent) {
-    setSelectedAgent(agent); setSelectedRecord(null); setCurrentCase(null); setAnswer(''); setPolicies([]); setError(''); setProposal(null); setGroup(agent.groups?.[0] || '');
+    setSelectedAgent(agent); setSelectedRecord(null); setCurrentCase(null); setAnswer(''); setPolicies([]); setError(''); setProposal(null); setVerification(''); setStoredProposals([]); setGroup(agent.groups?.[0] || '');
     try { const data = await api(`/agents/${agent.id}/sca`); setPolicies(data.policies || []); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'SCA results unavailable.'); }
+    await loadProposals(agent.id).catch(() => undefined);
+  }
+
+  async function loadProposals(agentId: string) {
+    const data = await api('/policies/agent-sca/proposals', { method: 'POST', body: JSON.stringify({ agent_id: agentId }) });
+    setStoredProposals(data.proposals || []);
+  }
+
+  function openProposal(item: StoredProposal) {
+    setProposal({ ...item, group: item.group_name, proposal_id: item.id, valid: true,
+      scope: item.status === 'applied' ? `Group ${item.group_name} configuration updated; agent distribution awaits verification` :
+        item.status === 'rolled_back' ? `Saved configuration restored for group ${item.group_name}; agent distribution awaits verification` :
+        `All agents assigned to group ${item.group_name}; no configuration was changed`,
+      next_check: 'After apply, check group synchronization and the next SCA scan' });
+    setVerification('');
   }
 
   async function selectCase(item: Investigation) {
@@ -87,8 +108,49 @@ export function Investigations({ core }: { core: CoreStart }) {
         agent_id: selectedAgent.id, group, settings: scaSettings,
       }) });
       setProposal(data);
+      await loadProposals(selectedAgent.id).catch(() => undefined);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not validate the SCA proposal.'); }
     finally { setValidating(false); }
+  }
+
+  async function applyScaProposal() {
+    if (!proposal?.proposal_id || !proposal.valid || !selectedAgent) return;
+    if (!window.confirm(`Apply the reviewed SCA settings to group “${proposal.group}”? Every agent in this group may receive the change.`)) return;
+    setApplying(true); setError(''); setVerification('');
+    try {
+      await api(`/policies/agent-sca/proposals/${proposal.proposal_id}/apply`, { method: 'POST', body: '{}' });
+      const status = await api(`/policies/agent-sca/proposals/${proposal.proposal_id}`);
+      setProposal({ ...proposal, status: status.status, applied_at: status.applied_at,
+        scope: `Group ${proposal.group} configuration updated; agent distribution awaits verification` });
+      await loadProposals(selectedAgent.id).catch(() => undefined);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not apply the proposal.'); }
+    finally { setApplying(false); }
+  }
+
+  async function rollbackScaProposal() {
+    if (!proposal?.proposal_id || proposal.status !== 'applied') return;
+    if (!window.confirm(`Restore the saved agent.conf for group “${proposal.group}”?`)) return;
+    setApplying(true); setError(''); setVerification('');
+    try {
+      await api(`/policies/agent-sca/proposals/${proposal.proposal_id}/rollback`, { method: 'POST', body: '{}' });
+      setProposal({ ...proposal, status: 'rolled_back', scope: `Saved configuration restored for group ${proposal.group}; agent distribution awaits verification` });
+      if (selectedAgent) await loadProposals(selectedAgent.id).catch(() => undefined);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not roll back the proposal.'); }
+    finally { setApplying(false); }
+  }
+
+  async function checkScaVerification() {
+    if (!selectedAgent || proposal?.status !== 'applied') return;
+    setApplying(true); setError('');
+    try {
+      const [agentData, scaData] = await Promise.all([api(`/agents/${selectedAgent.id}`), api(`/agents/${selectedAgent.id}/sca`)]);
+      const scans = (scaData.policies || []).map((item: any) => item.end_scan).filter(Boolean).sort();
+      const latest = scans[scans.length - 1] || '';
+      const laterScan = latest && proposal.applied_at && Date.parse(latest) > Date.parse(proposal.applied_at);
+      setVerification(`Agent group sync: ${agentData.agent.group_config_status || 'unknown'}. Latest SCA scan: ${latest || 'none'}${laterScan ? ' (after apply)' : ' (no post-apply scan observed yet)'}.`);
+      setPolicies(scaData.policies || []);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not check agent status.'); }
+    finally { setApplying(false); }
   }
 
   async function analyze() {
@@ -140,7 +202,7 @@ export function Investigations({ core }: { core: CoreStart }) {
   return <main className="wlaInvestigations">
     <header className="wlaPageHeader">
       <div><h1>AI investigations</h1><p>Investigate Wazuh evidence, then review what the assistant found.</p></div>
-      <span className="wlaReadOnly">Read-only analysis</span>
+      <span className="wlaReadOnly">Reviewed policy changes</span>
     </header>
     <div className="wlaPageGrid">
       <aside className="wlaCaseRail" aria-label="Saved investigations">
@@ -171,7 +233,7 @@ export function Investigations({ core }: { core: CoreStart }) {
         {selectedRecord || selectedAgent ? <>
           <div className="wlaPanelHeading"><h2>{selectedAgent ? 'Agent posture' : 'Event detail'}</h2><span>{selectedAgent ? `Agent ${selectedAgent.id}` : selectedRecord!.source.rule?.id || sourceType}</span></div>
           {selectedAgent ? <div className="wlaDetailContent"><h3>{selectedAgent.name}</h3><p>{selectedAgent.os || 'OS unknown'} · {selectedAgent.status}</p><h4>SCA policies</h4>{policies.length ? policies.map((item) => <div className="wlaPolicyRow" key={item.policy_id}><strong>{item.name}</strong><span>Score {item.score ?? '—'} · {item.fail ?? 0} failed · {item.pass ?? 0} passed</span></div>) : <p>No SCA policy results available for this agent.</p>}
-            <div className="wlaProposalForm"><h4>Propose agent SCA settings</h4><p>This validates a candidate for the whole group. It does not activate it or prove a new endpoint scan passed.</p>
+            <div className="wlaProposalForm"><h4>Propose agent SCA settings</h4><p>Validate a candidate for the whole group, review its exact diff, then explicitly apply it. Agent sync and the next SCA scan are checked separately.</p>
               <label>Agent group<select value={group} onChange={(event) => { setGroup(event.target.value); setProposal(null); }}>{(selectedAgent.groups || []).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
               <div className="wlaProposalChoices">
                 <label>SCA<select value={scaSettings.enabled} onChange={(event) => { setScaSettings({ ...scaSettings, enabled: event.target.value }); setProposal(null); }}><option value="yes">Enabled</option><option value="no">Disabled</option></select></label>
@@ -180,7 +242,14 @@ export function Investigations({ core }: { core: CoreStart }) {
                 <label>Skip NFS<select value={scaSettings.skip_nfs} onChange={(event) => { setScaSettings({ ...scaSettings, skip_nfs: event.target.value }); setProposal(null); }}><option value="yes">Yes</option><option value="no">No</option></select></label>
               </div>
               <EuiButton size="s" onClick={validateScaProposal} isLoading={validating} isDisabled={!group}>Validate proposal</EuiButton>
-              {proposal && <div className="wlaProposalResult"><strong>{proposal.valid ? 'Wazuh syntax check passed' : 'Wazuh syntax check failed'}</strong><p>{proposal.scope}</p><pre>{proposal.diff || 'No change from the active configuration.'}</pre><small>{proposal.validator_output.trim()}</small><p>{proposal.next_check}</p></div>}
+              {!!storedProposals.length && <div className="wlaStoredProposals"><h5>Recent proposals</h5>{storedProposals.map((item) => <button key={item.id} onClick={() => openProposal(item)}><span>{item.group_name} · {item.status}</span><small>{new Date(item.created_at).toLocaleString()}</small></button>)}</div>}
+              {proposal && <div className="wlaProposalResult"><strong>{proposal.status === 'applied' ? 'Applied to group configuration' : proposal.status === 'rolled_back' ? 'Saved configuration restored' : proposal.valid ? 'Wazuh syntax check passed' : 'Wazuh syntax check failed'}</strong><p>{proposal.scope}</p><pre>{proposal.diff || 'No change from the active configuration.'}</pre><small>{proposal.validator_output.trim()}</small>
+                {proposal.expires_at && proposal.status !== 'applied' && <p>Proposal expires {new Date(proposal.expires_at).toLocaleString()}.</p>}
+                {proposal.valid && proposal.proposal_id && <div className="wlaProposalActions">
+                  {(!proposal.status || proposal.status === 'validated') && <EuiButton size="s" fill onClick={applyScaProposal} isLoading={applying} isDisabled={!!proposal.expires_at && Date.parse(proposal.expires_at) <= Date.now()}>Apply reviewed change</EuiButton>}
+                  {proposal.status === 'applied' && <><EuiButton size="s" onClick={checkScaVerification} isLoading={applying}>Check agent sync and scan</EuiButton><EuiButton size="s" color="danger" onClick={rollbackScaProposal} isLoading={applying}>Roll back</EuiButton></>}
+                </div>}
+                {verification && <p role="status">{verification}</p>}<p>{proposal.next_check}</p></div>}
             </div></div>
             : <div className="wlaDetailContent"><h3>{selectedRecord!.source.rule?.description || 'Raw event'}</h3><p>{selectedRecord!.source.timestamp} · {selectedRecord!.source.agent?.name || 'Unknown agent'}</p><dl><dt>Source</dt><dd>{selectedRecord!.index}/{selectedRecord!.id}</dd><dt>Rule</dt><dd>{selectedRecord!.source.rule?.id || 'No triggered rule'}</dd><dt>Location</dt><dd>{selectedRecord!.source.location || 'Unknown'}</dd></dl>{selectedRecord!.source.full_log && <pre>{selectedRecord!.source.full_log}</pre>}</div>}
           <div className="wlaDetailAction"><EuiButton size="s" fill onClick={analyze} isLoading={busy}>{selectedAgent ? 'Draft posture review' : 'Investigate with AI'}</EuiButton><small>Creates a saved, read-only investigation.</small></div>

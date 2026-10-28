@@ -66,23 +66,24 @@ async function managerRead(context: any, path: string, params: Record<string, un
   return result.data?.data?.affected_items || [];
 }
 
-function validatePolicy(payload: unknown): Promise<{ status: number; body: any }> {
-  const token = process.env.ASSISTANT_POLICY_TOKEN || '';
+function policyRequest(action: 'validator' | 'apply', path: string, payload: unknown): Promise<{ status: number; body: any }> {
+  const token = action === 'validator' ? process.env.ASSISTANT_POLICY_TOKEN || '' : process.env.ASSISTANT_POLICY_APPLY_TOKEN || '';
   if (token.length < 32) return Promise.reject(new Error('policy token missing'));
   const body = JSON.stringify(payload);
   return new Promise((resolve, reject) => {
     const upstream = httpRequest({
-      hostname: '127.0.0.1', port: 8766, method: 'POST', path: '/validate', timeout: 20000,
-      headers: { 'X-Policy-Token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      hostname: '127.0.0.1', port: action === 'validator' ? 8766 : 8768, method: 'POST', path, timeout: 20000,
+      headers: { [action === 'validator' ? 'X-Policy-Token' : 'X-Policy-Apply-Token']: token,
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     }, (result) => {
       const chunks: Buffer[] = [];
       result.on('data', (chunk: Buffer) => chunks.push(chunk));
       result.on('end', () => {
         try { resolve({ status: result.statusCode || 502, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); }
-        catch { reject(new Error('invalid policy validator response')); }
+        catch { reject(new Error('invalid policy service response')); }
       });
     });
-    upstream.on('timeout', () => upstream.destroy(new Error('policy validation timeout')));
+    upstream.on('timeout', () => upstream.destroy(new Error('policy service timeout')));
     upstream.on('error', reject);
     upstream.end(body);
   });
@@ -365,6 +366,18 @@ export class LocalAiServerPlugin implements Plugin {
       }
     });
 
+    router.get({ path: PREFIX + '/agents/{id}', validate: { params: schema.object({ id: schema.string() }) } },
+      async (context: any, request: any, response: any) => {
+        if (!AGENT_ID.test(request.params.id)) return response.badRequest();
+        try {
+          const agents = await managerRead(context, '/agents', { agents_list: request.params.id, limit: 1 });
+          if (!agents.length) return response.notFound();
+          const agent = agents[0];
+          return response.ok({ body: { agent: { id: agent.id, name: agent.name, status: agent.status,
+            group_config_status: agent.group_config_status, groups: agentGroups(agent) } } });
+        } catch { return response.customError({ statusCode: 503, body: { message: 'Agent status unavailable or not permitted' } }); }
+      });
+
     router.get({ path: PREFIX + '/agents/{id}/sca', validate: { params: schema.object({ id: schema.string() }) } },
       async (context: any, request: any, response: any) => {
         if (!AGENT_ID.test(request.params.id)) return response.badRequest();
@@ -400,12 +413,49 @@ export class LocalAiServerPlugin implements Plugin {
         if (!agents.length) return response.notFound();
         const groups = agentGroups(agents[0]);
         if (!groups.includes(group)) return response.badRequest();
-        const checked = await validatePolicy({ group, settings });
+        const checked = await policyRequest('validator', '/validate', { group, settings, agent_id, owner: identity.owner });
         return response.custom({ statusCode: checked.status, headers: { 'Cache-Control': 'no-store' }, body: checked.body });
       } catch {
         return response.customError({ statusCode: 503, body: { message: 'Wazuh policy validation unavailable' } });
       }
     });
+
+    const proposalRoute = (action: 'status' | 'apply' | 'rollback') => async (context: any, request: any, response: any) => {
+      if (!SESSION_ID.test(request.params.id)) return response.badRequest();
+      try {
+        const identity = await currentIdentity(context);
+        if (!identity) return response.unauthorized();
+        if (!adminAllowed(identity)) return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
+        const proposal = await policyRequest('validator', '/proposal', { proposal_id: request.params.id, owner: identity.owner });
+        if (proposal.status !== 200) return response.custom({ statusCode: proposal.status, body: proposal.body });
+        if (action === 'apply') {
+          const agents = await managerRead(context, '/agents', { agents_list: proposal.body.agent_id, limit: 1 });
+          if (!agents.length || !agentGroups(agents[0]).includes(proposal.body.group_name)) {
+            return response.customError({ statusCode: 409, body: { message: 'Agent group membership changed; validate again' } });
+          }
+        }
+        const result = await policyRequest('apply', '/' + action, { proposal_id: request.params.id, owner: identity.owner });
+        return response.custom({ statusCode: result.status, headers: { 'Cache-Control': 'no-store' }, body: result.body });
+      } catch {
+        return response.customError({ statusCode: 503, body: { message: 'Policy apply service unavailable' } });
+      }
+    };
+    router.post({ path: PREFIX + '/policies/agent-sca/proposals', validate: { body: schema.object({ agent_id: schema.string() }) } },
+      async (context: any, request: any, response: any) => {
+        if (!AGENT_ID.test(request.body.agent_id)) return response.badRequest();
+        try {
+          const identity = await currentIdentity(context);
+          if (!identity) return response.unauthorized();
+          if (!adminAllowed(identity)) return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
+          const agents = await managerRead(context, '/agents', { agents_list: request.body.agent_id, limit: 1 });
+          if (!agents.length) return response.notFound();
+          const result = await policyRequest('validator', '/proposals', { agent_id: request.body.agent_id, owner: identity.owner });
+          return response.custom({ statusCode: result.status, headers: { 'Cache-Control': 'no-store' }, body: result.body });
+        } catch { return response.customError({ statusCode: 503, body: { message: 'Policy proposals unavailable' } }); }
+      });
+    router.get({ path: PREFIX + '/policies/agent-sca/proposals/{id}', validate: { params: schema.object({ id: schema.string() }) } }, proposalRoute('status'));
+    router.post({ path: PREFIX + '/policies/agent-sca/proposals/{id}/apply', validate: { params: schema.object({ id: schema.string() }), body: schema.object({}) } }, proposalRoute('apply'));
+    router.post({ path: PREFIX + '/policies/agent-sca/proposals/{id}/rollback', validate: { params: schema.object({ id: schema.string() }), body: schema.object({}) } }, proposalRoute('rollback'));
 
     router.post({ path: PREFIX + '/investigations', validate: { body: schema.object({
       source_type: schema.string(), index: schema.maybe(schema.string({ maxLength: 128 })),

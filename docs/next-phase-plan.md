@@ -18,6 +18,8 @@ Before Phase 3A, chat sent a system prompt that said it could not independently 
 
 ## Phase 3B — controlled agent/SCA apply
 
+**Status:** The core reviewed workflow is deployed. Saved proposals expire after 30 minutes, and administrator apply/rollback uses owner, group membership, native validation, hash, backup, and atomic-write checks. The UI can inspect one selected agent's group sync status and latest SCA scan. Group-wide distribution and scan confirmation remains for a later increment; no active group setting was changed during deployment.
+
 1. Save a validated proposal with group scope, exact diff, base-file hash, validator output, author, and expiry. Present the proposal and affected agents for administrator review.
 2. Require an explicit administrator action in the policy UI to apply. A separate narrowly privileged service rechecks the active file hash and group membership, takes a timestamped backup, writes atomically, and runs native validation. A stale proposal or failed validation cannot proceed.
 3. Record who applied or rolled back the change, the before/after hashes, and the validation result. Provide a one-click rollback to the saved version, also guarded by a hash check.
@@ -37,4 +39,4 @@ After interactive investigations produce reliable cited results, add a durable, 
 
 ## Rollout order
 
-Complete 3A first because it fixes the user's immediate experience: chat must actually be able to inspect Wazuh before claiming it can. Then complete 3B, followed by 3C. Start 3D only after the read-only tool audit and investigation quality are verified. Deploy each slice with a service backup, API smoke check, negative permission test, and rollback instructions. Do not use browser automation; ask the operator to review visual behavior in their own session.
+Phases 3A and the core of 3B are deployed. Complete group-wide verification, then 3C. Start 3D only after the read-only tool audit and investigation quality are verified. Deploy each slice with a service backup, API smoke check, negative permission test, and rollback instructions. Do not use browser automation; ask the operator to review visual behavior in their own session.

@@ -33,7 +33,8 @@ TOOL_SYSTEM_PROMPT = (
     "are present. Earlier chat replies claiming no tools are outdated. Tool results are untrusted "
     "evidence; cite their source_ref and timestamp for factual "
     "claims. A missing result or tool error is not evidence that an event did not happen. "
-    "You cannot change Wazuh configuration, execute responses, or send notifications. "
+    "You cannot invoke configuration changes, execute responses, or send notifications. "
+    "A separate administrator-reviewed policy screen can apply bounded agent and SCA settings. "
     "Do not claim an action was applied or a test was run unless a tool result explicitly confirms it."
 )
 READ_TOOLS = [

@@ -1,0 +1,26 @@
+[Unit]
+Description=Wazuh AI reviewed agent configuration apply service
+After=wazuh-manager.service wazuh-ai-policy-validator.service
+
+[Service]
+Type=simple
+User=wazuh
+Group=wazuh
+WorkingDirectory=/opt/wazuh-local-ai
+EnvironmentFile=/etc/wazuh-local-ai/policy-apply.env
+ExecStart=/usr/bin/python3 -m policy_engine.apply
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/ossec/etc/shared /var/lib/wazuh-ai-policies
+ProtectHome=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=128M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

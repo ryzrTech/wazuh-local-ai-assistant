@@ -30,6 +30,7 @@ export function capabilities(admin: boolean) {
     scope: 'Read-only Wazuh data through the signed-in user’s permissions',
     limits: { search_hours: 720, search_results: 10, raw_event_retention_days: 30 },
     policy_validation: admin ? 'Agent and SCA group-setting proposals can be syntax-checked in AI investigations' : 'Administrator access required',
+    reviewed_policy_ui: admin ? 'Agent and SCA group settings can be applied or rolled back only after explicit review in AI investigations' : 'Administrator access required',
     policy_apply: false, active_response: false, arbitrary_commands: false,
     note: 'A tool can be available even when this user lacks permission to read a particular source.',
   };

@@ -1,6 +1,6 @@
 # Deploy the native sidebar
 
-This integration targets Wazuh 4.14.9 with OpenSearch Dashboards 2.19.6. Check installed versions before deploying. The investigations application reads bounded Wazuh alerts, raw events, agents, and SCA results in the signed-in user's context. It has no configuration write or response tools. A model API key and valid model ID are required for AI replies; investigation browsing and conversation storage can run without them.
+This integration targets Wazuh 4.14.9 with OpenSearch Dashboards 2.19.6. Check installed versions before deploying. Chat and investigations read bounded Wazuh alerts, raw events, agents, and SCA results in the signed-in user's context. The model has no configuration write or response tools; a separate administrator-reviewed workflow can apply bounded agent/SCA settings. A model API key and valid model ID are required for AI replies; investigation browsing and conversation storage can run without them.
 
 ## Build
 
@@ -12,7 +12,7 @@ npm ci
 npm run build
 ```
 
-The build creates `server/index.js` and `target/public/wazuhAiTools.plugin.js`. It uses Dashboard's shared React and EUI libraries; no Dashboard source checkout is required. The build files are ignored by Git. Package only the manifest, package metadata, compiled server entry point, and public bundle for installation.
+The build creates `server/index.js` and `target/public/wazuhAiPolicyApply.plugin.js`. It uses Dashboard's shared React and EUI libraries; no Dashboard source checkout is required. The build files are ignored by Git. Package only the manifest, package metadata, compiled server entry point, and public bundle for installation.
 
 ## Configure the service
 
@@ -31,17 +31,17 @@ Use the same proxy and admin tokens in a protected `EnvironmentFile` for the Das
 
 ## Activate the Dashboard plugin
 
-Place the compiled plugin in `plugins/wazuhAiTools` under the installed Dashboard root. The directory must contain `opensearch_dashboards.json`, `package.json`, `server/index.js`, and `target/public/wazuhAiTools.plugin.js`. Add the protected proxy and admin tokens to the Dashboard systemd environment, then restart Dashboard. Confirm the plugin appears in `opensearch-dashboards-plugin list --allow-root`, startup logs include `wazuhAiTools`, and the HTTPS entry page responds. Verify the sidebar in an authenticated session. Provider setup requires the `all_access` role by default; `ASSISTANT_ADMIN_ROLES` can define other indexer roles.
+Place the compiled plugin in `plugins/wazuhAiPolicyApply` under the installed Dashboard root. The directory must contain `opensearch_dashboards.json`, `package.json`, `server/index.js`, and `target/public/wazuhAiPolicyApply.plugin.js`. Add the protected proxy and admin tokens to the Dashboard systemd environment, then restart Dashboard. Confirm the plugin appears in `opensearch-dashboards-plugin list --allow-root`, startup logs include `wazuhAiPolicyApply`, and the HTTPS entry page responds. Verify the sidebar in an authenticated session. Provider setup requires the `all_access` role by default; `ASSISTANT_ADMIN_ROLES` can define other indexer roles.
 
-The Dashboard distribution serves plugin JavaScript with a one-year browser cache lifetime. Deployments that reuse an existing plugin ID and asset path may leave users on the old UI even after a service restart. Use a fresh plugin asset path for a forced update, or have users explicitly clear the cached plugin asset. The current `wazuhAiTools` ID uses a fresh asset path.
+The Dashboard distribution serves plugin JavaScript with a one-year browser cache lifetime. Deployments that reuse an existing plugin ID and asset path may leave users on the old UI even after a service restart. Use a fresh plugin asset path for a forced update, or have users explicitly clear the cached plugin asset. The current `wazuhAiPolicyApply` ID uses a fresh asset path.
 
 In sidebar settings, an administrator enters an approved `/v1` API URL and dedicated key, tests the connection, selects a returned model, and saves. The key is stored in a mode 0600 server file and is never returned to the browser. Changing allowlisted hosts or service tokens requires a service restart. Conversation retention and deletion are per user. See [investigations.md](investigations.md) for raw-event archiving and retention setup.
 
-## Validate agent and SCA proposals
+## Validate and apply agent and SCA proposals
 
-Install `policy_engine/` beside `orchestrator/` under `/opt/wazuh-local-ai`. Install `deploy/wazuh-ai-policy-validator.service` as a systemd unit and adjust its Wazuh service account if the installation uses a different account. Generate a **third**, independent 32-character-or-longer token as `ASSISTANT_POLICY_TOKEN` in `/etc/wazuh-local-ai/policy.env` and the Dashboard's protected environment file. Restrict both files to root. Start the validator service and confirm `http://127.0.0.1:8766/health` returns 200. The service accepts only authenticated `POST /validate` requests with a group name and the four enumerated SCA settings; it has no apply endpoint.
+Install `policy_engine/` beside `orchestrator/` under `/opt/wazuh-local-ai`. Create `/var/lib/wazuh-ai-policies` and its `backups/` child as mode 0700 directories owned by the Wazuh service account. Install `deploy/wazuh-ai-policy-validator.service` and `deploy/wazuh-ai-policy-apply.service`, adjusting the account and Wazuh shared-config path for the installation. Generate distinct 32-character-or-longer tokens as `ASSISTANT_POLICY_TOKEN` and `ASSISTANT_POLICY_APPLY_TOKEN` in root-only service environment files and the Dashboard's protected environment file. Start both services and confirm loopback `/health` on ports 8766 and 8768. Both services must reject unauthenticated requests. The validator has only the private policy directory writable; the apply service additionally has the Wazuh shared group directory writable.
 
-In the AI investigations page, select an agent in **Agents & SCA**, choose one of its assigned groups, select the SCA settings, and click **Validate proposal**. The Dashboard checks the administrator role and the agent's group membership before forwarding the request. The validator stages the candidate in a private temporary file, runs Wazuh `verify-agent-conf`, and returns the exact diff. A successful result checks syntax only; apply and post-change SCA verification remain separate operational steps.
+In the AI investigations page, select an agent in **Agents & SCA**, choose one of its assigned groups, select the SCA settings, and click **Validate proposal**. The Dashboard checks the administrator role and the agent's group membership before forwarding the request. The validator stages the candidate in a private temporary file, runs Wazuh `verify-agent-conf`, and returns the complete diff. Valid proposals remain available to their owner for 30 minutes. After reviewing the diff and scope, an administrator must explicitly click **Apply reviewed change**. The executor rechecks the active hash and native syntax, saves a private backup, and writes atomically. **Check agent sync and scan** reports the selected agent's current status and latest SCA scan; review other group members separately. **Roll back** restores the saved file only when no intervening edit occurred. The model cannot invoke apply or rollback.
 
 ## Set up alerting
 

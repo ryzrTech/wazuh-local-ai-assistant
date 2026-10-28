@@ -1,6 +1,6 @@
 # Wazuh local AI assistant
 
-Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSearch Dashboards plugin provides a chat sidebar and an AI investigations page. Chat can request bounded read-only searches of alerts, raw events, agents, and SCA results through the signed-in user's permissions. It does not change Wazuh configuration or execute security responses.
+Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSearch Dashboards plugin provides a chat sidebar and an AI investigations page. Chat can request bounded read-only searches of alerts, raw events, agents, and SCA results through the signed-in user's permissions. A separate reviewed administrator workflow can apply bounded agent/SCA settings; chat cannot apply changes or execute security responses.
 
 ## Milestone status
 
@@ -9,9 +9,9 @@ Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSea
 | 1. Discovery and architecture | Complete for the observed Wazuh 4.14.9 host; deployment-specific findings stay in private operator documentation. |
 | 2. AI sidebar | Installed on a Wazuh 4.14.9 test host. The sidebar includes provider setup and per-user history controls. Model chat was validated by the operator. |
 | 3. Read-only Wazuh investigations | Alert, archive, agent, and SCA views plus model-directed read tools implemented; authenticated UI verification pending. |
-| 4. Agent/SCA proposal validation | A bounded group-settings form produces an exact diff and runs Wazuh's native syntax validator. No apply path or endpoint scan is automated. |
+| 4. Agent/SCA proposal and apply | A bounded group-settings form shows an exact diff and native syntax result. An administrator can explicitly apply or roll back a saved proposal with hash checks and a private backup; agent-side checks remain separate. |
 | 5. First detection and delivery policy | A tested level-12 SSH root-login rule is installed on the test host. Alert delivery is configurable in the assistant settings, with Dashboard only as the default and an optional HTTPS webhook. |
-| 6. Continuous triage and remediation | Planned; interactive chat tools are read-only, with no background triage, automatic response, or configuration apply path. |
+| 6. Continuous triage and remediation | Planned; interactive chat tools are read-only, with no background triage or automatic response. Policy apply is available only through the reviewed administrator UI. |
 
 ## Run the isolated preview
 
