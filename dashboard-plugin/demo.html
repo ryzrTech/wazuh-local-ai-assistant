@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wazuh local AI sidebar — isolated preview</title>
+  <link rel="stylesheet" href="/demo.css">
+  <script src="/demo.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="nav" aria-label="Preview navigation">
+      <div class="brand">W<span>·</span> Security</div>
+      <div class="nav-section">SECURITY OPERATIONS</div>
+      <div class="nav-item active">Overview</div>
+      <div class="nav-item">Security events</div>
+      <div class="nav-item">Endpoints</div>
+      <div class="nav-item">Threat hunting</div>
+    </aside>
+    <div class="main-column">
+      <header class="topbar"><span>Overview</span><span class="topbar-note">Isolated interface preview</span></header>
+      <main class="workspace">
+        <p class="eyebrow">SECURITY OPERATIONS</p>
+        <h1>Overview</h1>
+        <p class="muted">This preview uses sample dashboard chrome. It does not display live Wazuh data.</p>
+        <div class="preview-grid" aria-hidden="true">
+          <div class="placeholder"><span class="placeholder-title">Agents</span><span class="placeholder-line"></span><span class="placeholder-line short"></span></div>
+          <div class="placeholder"><span class="placeholder-title">Alerts</span><span class="placeholder-line"></span><span class="placeholder-line short"></span></div>
+          <div class="placeholder wide"><span class="placeholder-title">Security activity</span><span class="placeholder-line"></span><span class="placeholder-line"></span><span class="placeholder-line short"></span></div>
+        </div>
+      </main>
+    </div>
+  </div>
+  <button id="toggle" class="assistant-toggle" type="button" aria-controls="assistant" aria-expanded="false">AI assistant</button>
+  <section id="assistant" class="assistant" aria-label="AI assistant" hidden>
+    <header class="assistant-header">
+      <div><p class="eyebrow">LOCAL ANALYSIS</p><h2>AI assistant</h2></div>
+      <button id="close" class="icon-button" type="button" aria-label="Close assistant">×</button>
+    </header>
+    <div class="assistant-controls">
+      <label>Agent <select id="agent"><option>Security Analyst</option></select></label>
+      <label>Model <select id="model" disabled><option>Checking…</option></select></label>
+    </div>
+    <div class="session-header"><span>Conversations</span><button id="new-session" type="button">New</button></div>
+    <nav id="sessions" class="sessions" aria-label="Conversations"></nav>
+    <div id="notice" class="notice" role="status">Read-only prototype. No Wazuh data or actions are connected.</div>
+    <div id="transcript" class="transcript" role="log" aria-live="polite" aria-relevant="additions text"></div>
+    <form id="composer" class="composer">
+      <label for="prompt">Message</label>
+      <textarea id="prompt" maxlength="4000" rows="3" placeholder="Ask about a security concept…" required></textarea>
+      <div class="composer-footer"><span id="status" role="status">Ready</span><button id="send" type="submit">Send</button></div>
+    </form>
+    <footer class="assistant-footer"><label for="width">Sidebar width</label><input id="width" type="range" min="360" max="720" value="460"><button id="theme" type="button">Theme</button></footer>
+  </section>
+</body>
+</html>

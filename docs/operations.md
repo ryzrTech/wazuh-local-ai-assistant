@@ -1,0 +1,9 @@
+# Prototype operations
+
+Run the service as an unprivileged account, bind it to `127.0.0.1`, and put the SQLite file in a directory readable only by that account. Keep the provider config file private and `ASSISTANT_PROXY_TOKEN` and `ASSISTANT_ADMIN_TOKEN` in protected service environment files or a secret manager. Rotate both if either is exposed. Do not enable `--demo` on a shared host or reverse proxy.
+
+`GET /health` reports process availability. A healthy process does not prove the model is ready; an administrator can use the sidebar connection test to discover available models. Saving a provider requires a selected model returned by that test. A provider outage produces a generic 502 or SSE error and no cloud fallback.
+
+Back up the SQLite file while the service is stopped, or use SQLite's online backup API. Back up the provider config file separately and restrict it to the service account. User-selected retention is applied immediately and checked hourly. Users can delete one conversation or all of their own history from the sidebar settings. Restore the database and matching service configuration together. The service currently has no migration framework; preserve a copy before changing schema in later milestones.
+
+The native Dashboard proxy is installed on the first test host. Wazuh tools, background queue, rule staging, and response executor are still absent. There is no AI-originated Wazuh action path to disable.

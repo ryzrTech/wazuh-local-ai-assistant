@@ -1,0 +1,180 @@
+.wlaLauncherIcon.euiButtonIcon { margin: 0 8px; color: light-dark(#006f96, #54c4ee); }
+
+.wlaDrawer {
+  --wla-bg: light-dark(#fff, #1d1e24);
+  --wla-surface: light-dark(#f5f8fa, #262830);
+  --wla-field: light-dark(#fff, #20232b);
+  --wla-user: light-dark(#e8f4f8, #163442);
+  --wla-text: light-dark(#1b2630, #e5e8ef);
+  --wla-muted: light-dark(#536273, #aeb7c5);
+  --wla-border: light-dark(#d3dce3, #3b404b);
+  --wla-accent: light-dark(#006f96, #54c4ee);
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 1000;
+  width: min(440px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--wla-bg);
+  color: var(--wla-text);
+  border-left: 1px solid var(--wla-border);
+  box-shadow: 0 0 30px rgba(0, 0, 0, .22);
+}
+
+.wlaHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 68px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--wla-border);
+}
+.wlaIdentity, .wlaHeaderActions { display: flex; align-items: center; gap: 10px; }
+.wlaIdentity { min-width: 0; }
+.wlaMark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: light-dark(#e1f2f8, #153746);
+  color: var(--wla-accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -.04em;
+}
+.wlaIdentity h2 { margin: 0; color: var(--wla-text); font-size: 15px; font-weight: 700; line-height: 1.3; }
+.wlaIdentity p { margin: 2px 0 0; color: var(--wla-muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.wlaHeaderActions { gap: 2px; }
+.wlaHeaderActions .euiButtonIcon { color: var(--wla-muted); }
+.wlaHeaderActions .euiButtonIcon:hover { color: var(--wla-accent); }
+
+.wlaToolbar { display: flex; align-items: center; gap: 8px; padding: 14px 18px 6px; }
+.wlaToolbar select {
+  min-width: 0;
+  flex: 1;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--wla-border);
+  border-radius: 7px;
+  background: var(--wla-surface);
+  color: var(--wla-text);
+  font-size: 12px;
+}
+.wlaNew.euiButtonEmpty { flex: none; color: var(--wla-accent); }
+.wlaContext { display: flex; align-items: center; gap: 8px; padding: 4px 18px 13px; color: var(--wla-muted); font-size: 11px; }
+.wlaContextDot { width: 3px; height: 3px; border-radius: 50%; background: var(--wla-muted); }
+
+.wlaTranscript {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.wlaEmpty { margin: auto; max-width: 280px; text-align: center; }
+.wlaEmptyMark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin: 0 auto 15px;
+  border: 1px solid var(--wla-border);
+  border-radius: 12px;
+  background: var(--wla-surface);
+  color: var(--wla-accent);
+  font-size: 21px;
+}
+.wlaEmpty h3 { margin: 0 0 6px; color: var(--wla-text); font-size: 17px; font-weight: 650; }
+.wlaEmpty p { margin: 0; color: var(--wla-muted); font-size: 13px; line-height: 1.5; }
+.wlaMessage {
+  max-width: 95%;
+  padding: 11px 13px;
+  border: 1px solid var(--wla-border);
+  border-radius: 10px;
+  background: var(--wla-surface);
+  color: var(--wla-text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.wlaMessage strong { display: block; margin-bottom: 5px; color: var(--wla-muted); font-size: 11px; font-weight: 700; }
+.wla-user { align-self: flex-end; background: var(--wla-user); }
+.wla-assistant { align-self: flex-start; }
+.wlaCompact .wlaTranscript { gap: 9px; }
+.wlaCompact .wlaMessage { padding: 7px 10px; line-height: 1.35; }
+.wlaError { padding: 8px 18px; color: light-dark(#b42318, #ff8c83); font-size: 12px; }
+
+.wlaFooter { flex: none; padding: 12px 18px 10px; border-top: 1px solid var(--wla-border); }
+.wlaComposer {
+  padding: 9px 11px 8px;
+  border: 1px solid var(--wla-border);
+  border-radius: 11px;
+  background: var(--wla-field);
+}
+.wlaComposer:focus-within { border-color: var(--wla-accent); }
+.wlaComposer .euiTextArea {
+  display: block;
+  width: 100%;
+  height: 64px !important;
+  min-height: 64px !important;
+  max-height: 64px;
+  padding: 4px 0 !important;
+  resize: none;
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--wla-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.wlaComposer .euiTextArea::placeholder { color: var(--wla-muted); opacity: 1; }
+.wlaComposerActions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wlaComposerActions span { color: var(--wla-muted); font-size: 10px; }
+.wlaSend.euiButton { min-width: 62px; height: 29px; font-size: 11px; }
+.wlaScope { margin: 9px 0 0; text-align: center; color: var(--wla-muted); font-size: 10px; }
+
+.wlaSettings { min-height: 0; flex: 1; overflow: auto; padding: 24px 18px; }
+.wlaSettings h3 { margin: 0 0 5px; color: var(--wla-text); font-size: 18px; }
+.wlaSettingsIntro { margin: 0 0 18px; color: var(--wla-muted); font-size: 12px; }
+.wlaSettingRow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--wla-border); color: var(--wla-text); cursor: pointer; }
+.wlaSettingRow strong { display: block; font-size: 13px; font-weight: 650; }
+.wlaSettingRow small { display: block; margin-top: 4px; color: var(--wla-muted); font-size: 11px; }
+.wlaSettingRow input { width: 16px; height: 16px; flex: none; accent-color: var(--wla-accent); }
+.wlaSettingsSection { padding: 21px 0 17px; border-bottom: 1px solid var(--wla-border); }
+.wlaSettingsSection h4 { margin: 0 0 5px; color: var(--wla-text); font-size: 14px; font-weight: 700; }
+.wlaSettingsSection > p { margin: 0 0 14px; color: var(--wla-muted); font-size: 11px; line-height: 1.5; }
+.wlaFormField { display: block; margin: 13px 0 9px; color: var(--wla-text); font-size: 11px; font-weight: 650; }
+.wlaFormField input, .wlaFormField select {
+  display: block;
+  width: 100%;
+  height: 35px;
+  margin-top: 5px;
+  padding: 0 10px;
+  border: 1px solid var(--wla-border);
+  border-radius: 6px;
+  background: var(--wla-field);
+  color: var(--wla-text);
+  font-size: 12px;
+  font-weight: 400;
+}
+.wlaFormField input::placeholder { color: var(--wla-muted); }
+.wlaFormField select:disabled { opacity: .7; }
+.wlaSettingsSection .wlaFieldHint { margin: 4px 0 12px; color: var(--wla-muted); font-size: 10px; line-height: 1.4; }
+.wlaSettingsSection .wlaSettingsNotice { margin: 12px 0 0; color: var(--wla-muted); font-size: 11px; }
+.wlaHistoryList { max-height: 240px; overflow: auto; margin: 15px 0 8px; border-top: 1px solid var(--wla-border); }
+.wlaHistoryList > p { margin: 14px 0; color: var(--wla-muted); font-size: 11px; }
+.wlaHistoryItem { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 42px; border-bottom: 1px solid var(--wla-border); }
+.wlaHistoryItem span { overflow: hidden; color: var(--wla-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.wlaHistoryItem .euiButtonIcon { flex: none; color: var(--wla-muted); }
+.wlaHistoryItem .euiButtonIcon:hover { color: light-dark(#b42318, #ff8c83); }
+.wlaDeleteConfirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--wla-text); font-size: 11px; }
+.wlaSettingsSection .wlaSettingsError { margin: 12px 0 0; color: light-dark(#b42318, #ff8c83); font-size: 11px; }
+.wlaVisuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+
+@media (max-width: 600px) { .wlaDrawer { width: 100vw; } }

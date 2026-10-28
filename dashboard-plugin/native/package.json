@@ -1,0 +1,15 @@
+{
+  "name": "wazuh-local-ai-dashboard-plugin",
+  "version": "2.19.6.0",
+  "private": true,
+  "description": "Local AI sidebar for OpenSearch Dashboards 2.19.6",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  },
+  "opensearchDashboards": {
+    "version": "2.19.6"
+  }
+}
