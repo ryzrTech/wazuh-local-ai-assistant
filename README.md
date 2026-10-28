@@ -10,7 +10,8 @@ Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSea
 | 2. AI sidebar | Installed on a Wazuh 4.14.9 test host. The sidebar includes provider setup and per-user history controls. Model chat was validated by the operator. |
 | 3. Read-only Wazuh investigations | Initial alert, archive, agent, and SCA views implemented; interactive Dashboard verification pending. |
 | 4. Agent/SCA proposal validation | A bounded group-settings form produces an exact diff and runs Wazuh's native syntax validator. No apply path or endpoint scan is automated. |
-| 5–6. Detection policy, continuous triage, remediation | Planned; no write path is implemented. |
+| 5. First detection and delivery policy | A tested level-12 SSH root-login rule is installed on the test host. Alert delivery is configurable in the assistant settings, with Dashboard only as the default and an optional HTTPS webhook. |
+| 6. Continuous triage and remediation | Planned; no automatic response or Wazuh configuration apply path is implemented. |
 
 ## Run the isolated preview
 
@@ -34,6 +35,7 @@ Run the tests with `python3 -m unittest discover -s tests -v`. The tests simulat
 - `orchestrator/`: loopback HTTP service with SQLite conversation storage.
 - `provider_registry/`: approved-destination OpenAI-compatible adapter.
 - `policy_engine/`: isolated, read-only agent/SCA proposal validator; the service unit is in `deploy/`.
+- `alerting/`: bounded webhook dispatcher with a private retry queue; `rules/` contains the tested custom detection rule.
 - `docs/`: architecture, compatibility, security, API, deployment, rollback, and test notes.
 
 The project has no runtime third-party Python dependencies. Its isolated preview uses plain HTML, CSS, and JavaScript. The native source uses OpenSearch Dashboards' shared React and EUI packages and resolves user identity through the indexer's current-user security endpoint. Each user can delete conversations and set a 7, 30, 90, or 365-day retention period, or keep them until deletion. The new investigations page still needs an authenticated browser check.

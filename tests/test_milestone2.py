@@ -141,8 +141,12 @@ class Milestone2Tests(unittest.TestCase):
         self.assertEqual(self.request("DELETE", f"/api/sessions/{first}")[0], 200)
         self.assertEqual(self.request("GET", f"/api/sessions/{first}/messages")[0], 404)
         self.assertEqual(self.request("POST", "/api/settings", {"retention_days": 7})[0], 200)
-        with sqlite3.connect(self.db_path) as db:
-            db.execute("UPDATE sessions SET updated_at='2000-01-01 00:00:00' WHERE id=?", (second,))
+        db = sqlite3.connect(self.db_path)
+        try:
+            with db:
+                db.execute("UPDATE sessions SET updated_at='2000-01-01 00:00:00' WHERE id=?", (second,))
+        finally:
+            db.close()
         self.server.store.prune_all()
         self.assertEqual(self.request("GET", f"/api/sessions/{second}/messages")[0], 404)
         self.assertEqual(self.request("GET", f"/api/sessions/{other}/messages", owner="other")[0], 200)

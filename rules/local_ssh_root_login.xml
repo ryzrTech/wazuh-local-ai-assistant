@@ -1,0 +1,9 @@
+<!-- Alert when a direct SSH login to the root account succeeds. -->
+<group name="local,sshd,authentication_success,">
+  <rule id="100100" level="12">
+    <if_sid>5715</if_sid>
+    <match>for root from</match>
+    <description>Direct SSH login to the root account succeeded.</description>
+    <group>privileged_login,</group>
+  </rule>
+</group>

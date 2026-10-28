@@ -1,0 +1,26 @@
+[Unit]
+Description=Wazuh AI alert webhook dispatcher
+After=wazuh-manager.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wazuh
+Group=wazuh
+WorkingDirectory=/opt/wazuh-local-ai
+EnvironmentFile=/etc/wazuh-local-ai/alert.env
+ExecStart=/usr/bin/python3 -m alerting.dispatcher
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/wazuh-ai-alerts
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=160M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

@@ -33,6 +33,13 @@ function Assistant({ core }: { core: CoreStart }) {
   const [allowedHosts, setAllowedHosts] = useState<string[]>([]);
   const [providerBusy, setProviderBusy] = useState(false);
   const [providerStatus, setProviderStatus] = useState('');
+  const [alertMode, setAlertMode] = useState('dashboard');
+  const [alertLevel, setAlertLevel] = useState(12);
+  const [alertUrl, setAlertUrl] = useState('');
+  const [alertHost, setAlertHost] = useState('');
+  const [alertConfigured, setAlertConfigured] = useState(false);
+  const [alertBusy, setAlertBusy] = useState(false);
+  const [alertStatus, setAlertStatus] = useState('');
   const endpoint = (path: string) => core.http.basePath.prepend('/api/wazuh_local_ai' + path);
 
   useEffect(() => { localStorage.setItem('wla-enter-to-send', String(enterToSend)); }, [enterToSend]);
@@ -105,6 +112,10 @@ function Assistant({ core }: { core: CoreStart }) {
           try { const models = await api('/models'); if (active) setProviderModels(models.models || []); } catch { /* The connection test will report provider errors. */ }
         }
       } catch { if (active) setProviderAdmin(false); }
+      try {
+        const data = await api('/alerts/config');
+        if (active) { setAlertMode(data.mode); setAlertLevel(data.min_level); setAlertHost(data.url_host || ''); setAlertConfigured(!!data.configured); }
+      } catch { if (active) setAlertStatus('Alert delivery settings are unavailable.'); }
     })();
     return () => { active = false; };
   }, [open, settingsOpen]);
@@ -138,6 +149,28 @@ function Assistant({ core }: { core: CoreStart }) {
       if (sessionId && !list.some((session) => session.id === sessionId)) await selectSession('');
     } catch (cause) { setSettingsError(cause instanceof Error ? cause.message : 'Could not save retention.'); }
     finally { setHistoryBusy(false); }
+  }
+
+  async function saveAlertConfig() {
+    setAlertBusy(true); setAlertStatus('');
+    try {
+      const data = await api('/alerts/config', { method: 'POST', body: JSON.stringify({
+        mode: alertMode, min_level: alertLevel, url: alertUrl.trim(),
+      }) });
+      setAlertMode(data.mode); setAlertLevel(data.min_level); setAlertHost(data.url_host || '');
+      setAlertConfigured(!!data.configured); setAlertUrl('');
+      setAlertStatus(data.mode === 'dashboard' ? 'New alerts remain in Wazuh. External delivery is off.' : 'Webhook delivery enabled for new matching alerts.');
+    } catch (cause) { setAlertStatus(cause instanceof Error ? cause.message : 'Could not save alert delivery settings.'); }
+    finally { setAlertBusy(false); }
+  }
+
+  async function testAlertDelivery() {
+    setAlertBusy(true); setAlertStatus('');
+    try {
+      await api('/alerts/test', { method: 'POST', body: '{}' });
+      setAlertStatus('Synthetic test notification delivered.');
+    } catch (cause) { setAlertStatus(cause instanceof Error ? cause.message : 'Test notification failed.'); }
+    finally { setAlertBusy(false); }
   }
 
   async function deleteSession(id: string) {
@@ -257,6 +290,33 @@ function Assistant({ core }: { core: CoreStart }) {
             </>}
         </div>
         <div className="wlaSettingsSection">
+          <h4>Alert delivery</h4>
+          <p>Wazuh keeps new alerts in the Dashboard. Administrators can also deliver new matching alerts to a generic HTTPS webhook.</p>
+          {providerAdmin === false ? <p className="wlaSettingsNotice">Administrator access is required to configure alert delivery.</p> : providerAdmin === null ? <p>Checking access…</p> : <>
+            <label className="wlaFormField">Delivery
+              <select value={alertMode} onChange={(event) => { setAlertMode(event.target.value); setAlertStatus(''); }}>
+                <option value="dashboard">Dashboard only</option>
+                <option value="webhook">HTTPS webhook</option>
+              </select>
+            </label>
+            <label className="wlaFormField">Minimum alert level
+              <select value={alertLevel} onChange={(event) => setAlertLevel(Number(event.target.value))}>
+                <option value={10}>10 · High</option><option value={12}>12 · Critical</option><option value={15}>15 · Severe</option>
+              </select>
+            </label>
+            {alertMode === 'webhook' && <label className="wlaFormField">Webhook URL
+              <input type="url" value={alertUrl} placeholder={alertConfigured ? `Saved host: ${alertHost}` : 'https://hooks.example.com/wazuh'}
+                spellCheck={false} autoComplete="off" onChange={(event) => { setAlertUrl(event.target.value); setAlertStatus(''); }} />
+            </label>}
+            <p className="wlaFieldHint">The full URL is stored only on the server and is never shown again. Delivery starts with new alerts after saving. Private hosts require a server allowlist.</p>
+            <div className="wlaAlertActions">
+              <EuiButton size="s" fill onClick={saveAlertConfig} isLoading={alertBusy} isDisabled={alertMode === 'webhook' && !alertUrl.trim() && !alertConfigured}>Save alert delivery</EuiButton>
+              {alertMode === 'webhook' && alertConfigured && <EuiButton size="s" onClick={testAlertDelivery} isLoading={alertBusy} isDisabled={!!alertUrl.trim()}>Send test notification</EuiButton>}
+            </div>
+            {alertStatus && <p className="wlaSettingsNotice" role="status">{alertStatus}</p>}
+          </>}
+        </div>
+        <div className="wlaSettingsSection">
           <h4>Chat history</h4>
           <p>Only your conversations are shown here.</p>
           <label className="wlaFormField">Keep conversations for
@@ -317,7 +377,7 @@ function Assistant({ core }: { core: CoreStart }) {
               <EuiButton className="wlaSend" size="s" fill onClick={send} isLoading={busy}>Send</EuiButton>
             </div>
           </div>
-          <p className="wlaScope">Read only · No Wazuh data or actions connected</p>
+          <p className="wlaScope">Read only chat · Use AI investigations for selected Wazuh evidence</p>
         </div>
       </>}
     </aside>, document.body) : null;

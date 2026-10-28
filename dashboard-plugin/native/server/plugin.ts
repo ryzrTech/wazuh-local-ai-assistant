@@ -86,6 +86,36 @@ function validatePolicy(payload: unknown): Promise<{ status: number; body: any }
   });
 }
 
+function alertService(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<{ status: number; body: any }> {
+  const token = process.env.ASSISTANT_ALERT_TOKEN || '';
+  if (token.length < 32) return Promise.reject(new Error('alert token missing'));
+  const body = payload === undefined ? undefined : JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const upstream = httpRequest({
+      hostname: '127.0.0.1', port: 8767, method, path, timeout: 15000,
+      headers: {
+        'X-Alert-Token': token,
+        ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}),
+      },
+    }, (result) => {
+      const chunks: Buffer[] = [];
+      result.on('data', (chunk: Buffer) => chunks.push(chunk));
+      result.on('end', () => {
+        try { resolve({ status: result.statusCode || 502, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); }
+        catch { reject(new Error('invalid alert service response')); }
+      });
+    });
+    upstream.on('timeout', () => upstream.destroy(new Error('alert service timeout')));
+    upstream.on('error', reject);
+    upstream.end(body);
+  });
+}
+
+function adminAllowed(identity: { roles: unknown[] }) {
+  const allowed = new Set((process.env.ASSISTANT_ADMIN_ROLES || 'all_access').split(',').map((role) => role.trim()).filter(Boolean));
+  return identity.roles.some((role: unknown) => typeof role === 'string' && allowed.has(role));
+}
+
 function conciseSource(source: any) {
   return {
     timestamp: source.timestamp,
@@ -116,8 +146,7 @@ export class LocalAiServerPlugin implements Plugin {
           const identity = await currentIdentity(context);
           if (!identity) return response.unauthorized();
           if (adminOnly) {
-            const allowed = new Set((process.env.ASSISTANT_ADMIN_ROLES || 'all_access').split(',').map((role) => role.trim()).filter(Boolean));
-            if (!identity.roles.some((role: unknown) => typeof role === 'string' && allowed.has(role))) {
+            if (!adminAllowed(identity)) {
               return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
             }
           }
@@ -145,6 +174,23 @@ export class LocalAiServerPlugin implements Plugin {
     router.post({ path: PREFIX + '/settings', validate: { body: schema.object({ retention_days: schema.number({ min: 0, max: 365 }) }) } },
       handle('POST', '/settings', () => '/api/settings'));
     router.get({ path: PREFIX + '/provider/config', validate: false }, handle('GET', '/provider/config', () => '/api/provider/config', true));
+
+    const alertRoute = (method: 'GET' | 'POST', path: string) => async (context: any, request: any, response: any) => {
+      try {
+        const identity = await currentIdentity(context);
+        if (!identity) return response.unauthorized();
+        if (!adminAllowed(identity)) return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
+        const result = await alertService(method, path, method === 'POST' ? request.body : undefined);
+        return response.custom({ statusCode: result.status, headers: { 'Cache-Control': 'no-store' }, body: result.body });
+      } catch {
+        return response.customError({ statusCode: 503, body: { message: 'Alert delivery service unavailable' } });
+      }
+    };
+    router.get({ path: PREFIX + '/alerts/config', validate: false }, alertRoute('GET', '/config'));
+    router.post({ path: PREFIX + '/alerts/config', validate: { body: schema.object({
+      mode: schema.string(), min_level: schema.number({ min: 10, max: 15 }), url: schema.string({ maxLength: 2048 }),
+    }) } }, alertRoute('POST', '/config'));
+    router.post({ path: PREFIX + '/alerts/test', validate: { body: schema.object({}) } }, alertRoute('POST', '/test'));
     router.post({ path: PREFIX + '/provider/test', validate: { body: schema.object({
       url: schema.string({ minLength: 1, maxLength: 2048 }),
       key: schema.maybe(schema.string({ maxLength: 4096 })),
@@ -250,8 +296,7 @@ export class LocalAiServerPlugin implements Plugin {
       try {
         const identity = await currentIdentity(context);
         if (!identity) return response.unauthorized();
-        const allowed = new Set((process.env.ASSISTANT_ADMIN_ROLES || 'all_access').split(',').map((role) => role.trim()).filter(Boolean));
-        if (!identity.roles.some((role: unknown) => typeof role === 'string' && allowed.has(role))) {
+        if (!adminAllowed(identity)) {
           return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
         }
         const agents = await managerRead(context, '/agents', { agents_list: agent_id, limit: 1 });

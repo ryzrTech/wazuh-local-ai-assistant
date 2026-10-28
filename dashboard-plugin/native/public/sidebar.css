@@ -148,6 +148,7 @@
 .wlaSettingRow input { width: 16px; height: 16px; flex: none; accent-color: var(--wla-accent); }
 .wlaSettingsSection { padding: 21px 0 17px; border-bottom: 1px solid var(--wla-border); }
 .wlaSettingsSection h4 { margin: 0 0 5px; color: var(--wla-text); font-size: 14px; font-weight: 700; }
+.wlaAlertActions { display: flex; flex-wrap: wrap; gap: 8px; }
 .wlaSettingsSection > p { margin: 0 0 14px; color: var(--wla-muted); font-size: 11px; line-height: 1.5; }
 .wlaFormField { display: block; margin: 13px 0 9px; color: var(--wla-text); font-size: 11px; font-weight: 650; }
 .wlaFormField input, .wlaFormField select {
