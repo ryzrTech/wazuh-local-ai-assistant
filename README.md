@@ -1,13 +1,13 @@
 # Wazuh local AI assistant
 
-Self-hosted, OpenAI-compatible AI assistant prototype for Wazuh. This checkpoint includes a native sidebar plugin for OpenSearch Dashboards 2.19.6 and a loopback chat service. It **does not** inspect Wazuh data, run autonomous investigations, change rules, or execute security responses.
+Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSearch Dashboards plugin provides a chat sidebar and an AI investigations page. It can read selected alerts, raw events, agents, and SCA results through the signed-in user's permissions. It does not run autonomous investigations, change Wazuh configuration, or execute security responses.
 
 ## Milestone status
 
 | Milestone | Status |
 | --- | --- |
 | 1. Discovery and architecture | Complete for the observed Wazuh 4.14.9 host; deployment-specific findings stay in private operator documentation. |
-| 2. AI sidebar | Installed on a Wazuh 4.14.9 test host. The sidebar includes provider setup and per-user history controls. The AI investigations page searches alerts and raw events, shows agents and SCA results, and saves read-only AI analyses. Live model streaming remains to be tested by the operator. |
+| 2. AI sidebar | Installed on a Wazuh 4.14.9 test host. The sidebar includes provider setup and per-user history controls. Model chat was validated by the operator. |
 | 3. Read-only Wazuh investigations | Initial alert, archive, agent, and SCA views implemented; interactive Dashboard verification pending. |
 | 4–6. Policy validation, continuous triage, remediation | Design only; no write path is implemented. |
 
@@ -17,7 +17,7 @@ Python 3.10+ is sufficient. The provider must be an administrator-approved OpenA
 
 ```sh
 export ASSISTANT_PROVIDER_URL=https://model-gateway.example.internal/v1
-export ASSISTANT_ALLOWED_HOST=model-gateway.example.internal
+export ASSISTANT_ALLOWED_HOSTS=model-gateway.example.internal
 export ASSISTANT_MODEL=your-model-id
 export ASSISTANT_PROVIDER_KEY=your-dedicated-key
 python3 -m orchestrator.server --demo --db /tmp/wazuh-local-ai-demo.sqlite3
@@ -32,10 +32,9 @@ Run the tests with `python3 -m unittest discover -s tests -v`. The tests simulat
 - `dashboard-plugin/`: isolated sidebar preview and native 2.19.6 plugin source with an esbuild build script.
 - `orchestrator/`: loopback HTTP service with SQLite conversation storage.
 - `provider_registry/`: approved-destination OpenAI-compatible adapter.
-- `wazuh_tools/`, `policy_engine/`, `response_executor/`, `rule_staging/`: reserved for later policy and action milestones; intentionally empty.
 - `docs/`: architecture, compatibility, security, API, deployment, rollback, and test notes.
 
-The project has no runtime third-party Python dependencies. Its isolated preview uses plain HTML, CSS, and JavaScript. The native source uses OpenSearch Dashboards' shared React and EUI packages and resolves user identity through the indexer's current-user security endpoint. Each user can delete conversations and set a 7, 30, 90, or 365-day retention period, or keep them until deletion. Live model streaming still needs verification.
+The project has no runtime third-party Python dependencies. Its isolated preview uses plain HTML, CSS, and JavaScript. The native source uses OpenSearch Dashboards' shared React and EUI packages and resolves user identity through the indexer's current-user security endpoint. Each user can delete conversations and set a 7, 30, 90, or 365-day retention period, or keep them until deletion. The new investigations page still needs an authenticated browser check.
 
 ## License
 
