@@ -6,7 +6,9 @@ The native Dashboard plugin registers an **AI investigations** application along
 
 Searches are bounded to 40 recent records, a 1–720 hour time range, and fixed index patterns. Investigation evidence stores one selected record or a bounded agent/SCA summary in the same owner-scoped SQLite database as chat. Evidence is at most 6,000 characters and is presented to the model as untrusted data. The model produces advisory analysis with source references. It does not perform its own tool calls, execute shell commands, or modify Wazuh.
 
-The first agent posture flow drafts recommendations from SCA policy scores and a bounded set of failed checks. These are **unvalidated drafts**, because Wazuh agent and SCA configuration cannot be safely activated or tested from a chat answer. The application labels this state explicitly.
+The first agent posture flow drafts recommendations from SCA policy scores and a bounded set of failed checks. Model-written recommendations are **unvalidated drafts**. A separate administrator-only form supports four bounded SCA settings for a selected agent group: enablement, scan-on-start, scan interval, and skipping NFS. The validator reads the active group `agent.conf`, preserves existing policy declarations, returns a precise diff and active-file hash, and runs Wazuh's `verify-agent-conf` on a temporary candidate. It rejects ambiguous multi-block or scoped configurations. It never writes the active file.
+
+A passing result confirms Wazuh accepts the candidate syntax. It does not establish that an endpoint received the settings or that a later SCA score improved. The result names the whole group as the change scope and tells the operator to verify group synchronization and the next scan after a separately approved deployment.
 
 ## Thirty-day raw-event search
 
@@ -16,7 +18,7 @@ The archive policy does not change alert-index retention. It does not retroactiv
 
 ## Next policy slices
 
-1. **Agent and SCA configuration:** read effective group and agent settings, generate a structured proposal with target agent/group and exact diff, validate XML/YAML and allowed settings, compare failed SCA checks with the proposal, stage in an isolated directory, and require human approval before a separate deployment service applies it. Verify group synchronization and the next SCA scan; keep a backup and rollback path.
+1. **Agent and SCA configuration:** expand the current syntax validation to more agent modules and SCA policy YAML. Add proposal persistence, a separately approved deployment service with backups and hash checks, and post-apply group-sync and scan verification.
 2. **Detection rules:** inspect existing custom and built-in rules, generate candidate XML with collision checks and positive/negative fixtures, run Wazuh logtest, then stage for approval and controlled activation.
 3. **Access and response policies:** render current RBAC and active-response configuration read-only first. Proposals need a separate policy engine, independent authorization checks, and an emergency disable switch before any write path is enabled.
 4. **Continuous triage:** add a durable intake queue after interactive investigations produce reliable, cited analyses. Start in observe mode with bounded event filters and no automatic security response.

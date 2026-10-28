@@ -6,6 +6,7 @@ import { CoreSetup, Plugin, PluginInitializerContext } from 'opensearch_dashboar
 const PREFIX = '/api/wazuh_local_ai';
 const SESSION_ID = /^[a-f0-9-]{36}$/;
 const AGENT_ID = /^\d{1,6}$/;
+const GROUP = /^[A-Za-z0-9_.-]{1,64}$/;
 const INDEX = /^wazuh-(alerts|archives)-[a-zA-Z0-9._-]+$/;
 
 type RouteResponse = {
@@ -63,6 +64,28 @@ async function managerRead(context: any, path: string, params: Record<string, un
   return result.data?.data?.affected_items || [];
 }
 
+function validatePolicy(payload: unknown): Promise<{ status: number; body: any }> {
+  const token = process.env.ASSISTANT_POLICY_TOKEN || '';
+  if (token.length < 32) return Promise.reject(new Error('policy token missing'));
+  const body = JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const upstream = httpRequest({
+      hostname: '127.0.0.1', port: 8766, method: 'POST', path: '/validate', timeout: 20000,
+      headers: { 'X-Policy-Token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (result) => {
+      const chunks: Buffer[] = [];
+      result.on('data', (chunk: Buffer) => chunks.push(chunk));
+      result.on('end', () => {
+        try { resolve({ status: result.statusCode || 502, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); }
+        catch { reject(new Error('invalid policy validator response')); }
+      });
+    });
+    upstream.on('timeout', () => upstream.destroy(new Error('policy validation timeout')));
+    upstream.on('error', reject);
+    upstream.end(body);
+  });
+}
+
 function conciseSource(source: any) {
   return {
     timestamp: source.timestamp,
@@ -73,6 +96,12 @@ function conciseSource(source: any) {
     full_log: typeof source.full_log === 'string' ? source.full_log.slice(0, 1400) : undefined,
     data: source.data ? JSON.stringify(source.data).slice(0, 1400) : undefined,
   };
+}
+
+function agentGroups(agent: any): string[] {
+  if (Array.isArray(agent.group)) return agent.group.filter((value: unknown) => typeof value === 'string');
+  if (typeof agent.group === 'string') return agent.group.split(',').map((value: string) => value.trim()).filter(Boolean);
+  return [];
 }
 
 export class LocalAiServerPlugin implements Plugin {
@@ -186,6 +215,7 @@ export class LocalAiServerPlugin implements Plugin {
         return response.ok({ body: { agents: agents.map((agent: any) => ({
           id: agent.id, name: agent.name, status: agent.status, os: agent.os?.name,
           group_config_status: agent.group_config_status,
+          groups: agentGroups(agent),
         })) } });
       } catch {
         return response.customError({ statusCode: 503, body: { message: 'Wazuh agent data unavailable or not permitted' } });
@@ -206,6 +236,34 @@ export class LocalAiServerPlugin implements Plugin {
           return response.customError({ statusCode: 503, body: { message: 'SCA results unavailable or not permitted' } });
         }
       });
+
+    router.post({ path: PREFIX + '/policies/agent-sca/validate', validate: { body: schema.object({
+      agent_id: schema.string({ minLength: 1, maxLength: 6 }),
+      group: schema.string({ minLength: 1, maxLength: 64 }),
+      settings: schema.object({
+        enabled: schema.string(), scan_on_start: schema.string(),
+        skip_nfs: schema.string(), interval: schema.string(),
+      }),
+    }) } }, async (context: any, request: any, response: any) => {
+      const { agent_id, group, settings } = request.body;
+      if (!AGENT_ID.test(agent_id) || !GROUP.test(group) || group === '.' || group === '..') return response.badRequest();
+      try {
+        const identity = await currentIdentity(context);
+        if (!identity) return response.unauthorized();
+        const allowed = new Set((process.env.ASSISTANT_ADMIN_ROLES || 'all_access').split(',').map((role) => role.trim()).filter(Boolean));
+        if (!identity.roles.some((role: unknown) => typeof role === 'string' && allowed.has(role))) {
+          return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
+        }
+        const agents = await managerRead(context, '/agents', { agents_list: agent_id, limit: 1 });
+        if (!agents.length) return response.notFound();
+        const groups = agentGroups(agents[0]);
+        if (!groups.includes(group)) return response.badRequest();
+        const checked = await validatePolicy({ group, settings });
+        return response.custom({ statusCode: checked.status, headers: { 'Cache-Control': 'no-store' }, body: checked.body });
+      } catch {
+        return response.customError({ statusCode: 503, body: { message: 'Wazuh policy validation unavailable' } });
+      }
+    });
 
     router.post({ path: PREFIX + '/investigations', validate: { body: schema.object({
       source_type: schema.string(), index: schema.maybe(schema.string({ maxLength: 128 })),

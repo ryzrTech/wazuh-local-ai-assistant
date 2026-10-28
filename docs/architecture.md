@@ -19,6 +19,8 @@ The browser never receives a model key. The orchestrator binds only to loopback.
 
 Milestone 3 uses fixed, bounded read queries with the authenticated user's effective privileges and does not treat the orchestrator's service identity as an elevation path. Background jobs will use separate, explicitly scoped service identities. The policy executor is a separate future service with a distinct trust boundary and default Observe mode.
 
+The first policy validator is a separate loopback service running under the Wazuh service account with a read-only systemd filesystem and private temporary directory. It accepts only enumerated agent/SCA settings, stages a candidate, and invokes `verify-agent-conf` without a shell. It cannot apply a change. The Dashboard route requires an indexer admin role and confirms that the selected agent belongs to the target group; the future apply service will need its own authorization and stale-file hash check.
+
 ## Design decisions
 
 1. Keep vendor-owned Dashboard code untouched. Build an external plugin against the exact OpenSearch Dashboards version and place its compiled output in the Dashboard plugins directory.

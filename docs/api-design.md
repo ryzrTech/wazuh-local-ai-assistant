@@ -24,3 +24,5 @@ All routes except `/health` require `X-Assistant-Token` and `X-Assistant-User` i
 Error responses contain generic messages. Model provider errors do not reveal response bodies or credentials. A failed model call saves the user's message but not a partial assistant answer.
 
 The Dashboard plugin adds fixed, user-scoped read routes for recent alerts, raw events, agents, and SCA results. It resolves exact source IDs before creating an investigation; callers cannot supply arbitrary evidence through the browser route.
+
+`POST /api/wazuh_local_ai/policies/agent-sca/validate` is a Dashboard route for administrators. It accepts an agent ID, one of that agent's groups, and four enumerated SCA settings. The plugin checks group membership through Wazuh Core, then forwards the bounded request to a separate loopback service on port 8766 using `ASSISTANT_POLICY_TOKEN`. That service exposes `GET /health` and authenticated `POST /validate`; it returns a diff, active-file hash, native validator result, and `applied: false`. There is no policy apply route.

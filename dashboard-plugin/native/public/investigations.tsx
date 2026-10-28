@@ -4,8 +4,10 @@ import { CoreStart } from 'opensearch_dashboards/public';
 
 type SourceType = 'alert' | 'archive' | 'agent';
 type RecordItem = { id: string; index: string; source: any };
-type Agent = { id: string; name: string; status: string; os?: string; group_config_status?: string };
+type Agent = { id: string; name: string; status: string; os?: string; group_config_status?: string; groups: string[] };
 type Investigation = { session_id: string; source_type: string; source_ref: string; title: string; updated_at: string };
+type ScaSettings = { enabled: string; scan_on_start: string; skip_nfs: string; interval: string };
+type Proposal = { group: string; base_sha256: string; diff: string; valid: boolean; validator_output: string; scope: string; next_check: string };
 
 export function Investigations({ core }: { core: CoreStart }) {
   const [sourceType, setSourceType] = useState<SourceType>('alert');
@@ -23,6 +25,10 @@ export function Investigations({ core }: { core: CoreStart }) {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [group, setGroup] = useState('');
+  const [scaSettings, setScaSettings] = useState<ScaSettings>({ enabled: 'yes', scan_on_start: 'yes', skip_nfs: 'yes', interval: '12h' });
+  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [validating, setValidating] = useState(false);
 
   const endpoint = (path: string) => core.http.basePath.prepend('/api/wazuh_local_ai' + path);
   async function api(path: string, options: RequestInit = {}) {
@@ -41,7 +47,7 @@ export function Investigations({ core }: { core: CoreStart }) {
   }
 
   async function loadSource(kind: SourceType = sourceType) {
-    setLoading(true); setError(''); setSelectedRecord(null); setSelectedAgent(null); setPolicies([]); setCurrentCase(null); setAnswer('');
+    setLoading(true); setError(''); setSelectedRecord(null); setSelectedAgent(null); setPolicies([]); setCurrentCase(null); setAnswer(''); setProposal(null);
     try {
       if (kind === 'agent') {
         const data = await api('/agents');
@@ -59,18 +65,30 @@ export function Investigations({ core }: { core: CoreStart }) {
   useEffect(() => { loadCases().catch(() => undefined); loadSource('alert'); }, []);
 
   async function selectAgent(agent: Agent) {
-    setSelectedAgent(agent); setSelectedRecord(null); setCurrentCase(null); setAnswer(''); setPolicies([]); setError('');
+    setSelectedAgent(agent); setSelectedRecord(null); setCurrentCase(null); setAnswer(''); setPolicies([]); setError(''); setProposal(null); setGroup(agent.groups?.[0] || '');
     try { const data = await api(`/agents/${agent.id}/sca`); setPolicies(data.policies || []); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'SCA results unavailable.'); }
   }
 
   async function selectCase(item: Investigation) {
-    setCurrentCase(item); setSelectedRecord(null); setSelectedAgent(null); setError(''); setAnswer('');
+    setCurrentCase(item); setSelectedRecord(null); setSelectedAgent(null); setError(''); setAnswer(''); setProposal(null);
     try {
       const data = await api(`/sessions/${item.session_id}/messages`);
       const latest = [...(data.messages || [])].reverse().find((message: any) => message.role === 'assistant');
       setAnswer(latest?.content || 'No AI analysis has been saved for this investigation.');
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not open investigation.'); }
+  }
+
+  async function validateScaProposal() {
+    if (!selectedAgent || !group) return;
+    setValidating(true); setError(''); setProposal(null);
+    try {
+      const data = await api('/policies/agent-sca/validate', { method: 'POST', body: JSON.stringify({
+        agent_id: selectedAgent.id, group, settings: scaSettings,
+      }) });
+      setProposal(data);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not validate the SCA proposal.'); }
+    finally { setValidating(false); }
   }
 
   async function analyze() {
@@ -152,7 +170,18 @@ export function Investigations({ core }: { core: CoreStart }) {
       <section className="wlaDetailPanel" aria-label="Investigation detail">
         {selectedRecord || selectedAgent ? <>
           <div className="wlaPanelHeading"><h2>{selectedAgent ? 'Agent posture' : 'Event detail'}</h2><span>{selectedAgent ? `Agent ${selectedAgent.id}` : selectedRecord!.source.rule?.id || sourceType}</span></div>
-          {selectedAgent ? <div className="wlaDetailContent"><h3>{selectedAgent.name}</h3><p>{selectedAgent.os || 'OS unknown'} · {selectedAgent.status}</p><h4>SCA policies</h4>{policies.length ? policies.map((item) => <div className="wlaPolicyRow" key={item.policy_id}><strong>{item.name}</strong><span>Score {item.score ?? '—'} · {item.fail ?? 0} failed · {item.pass ?? 0} passed</span></div>) : <p>No SCA policy results available for this agent.</p>}</div>
+          {selectedAgent ? <div className="wlaDetailContent"><h3>{selectedAgent.name}</h3><p>{selectedAgent.os || 'OS unknown'} · {selectedAgent.status}</p><h4>SCA policies</h4>{policies.length ? policies.map((item) => <div className="wlaPolicyRow" key={item.policy_id}><strong>{item.name}</strong><span>Score {item.score ?? '—'} · {item.fail ?? 0} failed · {item.pass ?? 0} passed</span></div>) : <p>No SCA policy results available for this agent.</p>}
+            <div className="wlaProposalForm"><h4>Propose agent SCA settings</h4><p>This validates a candidate for the whole group. It does not activate it or prove a new endpoint scan passed.</p>
+              <label>Agent group<select value={group} onChange={(event) => { setGroup(event.target.value); setProposal(null); }}>{(selectedAgent.groups || []).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              <div className="wlaProposalChoices">
+                <label>SCA<select value={scaSettings.enabled} onChange={(event) => { setScaSettings({ ...scaSettings, enabled: event.target.value }); setProposal(null); }}><option value="yes">Enabled</option><option value="no">Disabled</option></select></label>
+                <label>Scan interval<select value={scaSettings.interval} onChange={(event) => { setScaSettings({ ...scaSettings, interval: event.target.value }); setProposal(null); }}>{['1h', '6h', '12h', '24h', '7d'].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+                <label>Scan on start<select value={scaSettings.scan_on_start} onChange={(event) => { setScaSettings({ ...scaSettings, scan_on_start: event.target.value }); setProposal(null); }}><option value="yes">Yes</option><option value="no">No</option></select></label>
+                <label>Skip NFS<select value={scaSettings.skip_nfs} onChange={(event) => { setScaSettings({ ...scaSettings, skip_nfs: event.target.value }); setProposal(null); }}><option value="yes">Yes</option><option value="no">No</option></select></label>
+              </div>
+              <EuiButton size="s" onClick={validateScaProposal} isLoading={validating} isDisabled={!group}>Validate proposal</EuiButton>
+              {proposal && <div className="wlaProposalResult"><strong>{proposal.valid ? 'Wazuh syntax check passed' : 'Wazuh syntax check failed'}</strong><p>{proposal.scope}</p><pre>{proposal.diff || 'No change from the active configuration.'}</pre><small>{proposal.validator_output.trim()}</small><p>{proposal.next_check}</p></div>}
+            </div></div>
             : <div className="wlaDetailContent"><h3>{selectedRecord!.source.rule?.description || 'Raw event'}</h3><p>{selectedRecord!.source.timestamp} · {selectedRecord!.source.agent?.name || 'Unknown agent'}</p><dl><dt>Source</dt><dd>{selectedRecord!.index}/{selectedRecord!.id}</dd><dt>Rule</dt><dd>{selectedRecord!.source.rule?.id || 'No triggered rule'}</dd><dt>Location</dt><dd>{selectedRecord!.source.location || 'Unknown'}</dd></dl>{selectedRecord!.source.full_log && <pre>{selectedRecord!.source.full_log}</pre>}</div>}
           <div className="wlaDetailAction"><EuiButton size="s" fill onClick={analyze} isLoading={busy}>{selectedAgent ? 'Draft posture review' : 'Investigate with AI'}</EuiButton><small>Creates a saved, read-only investigation.</small></div>
         </> : currentCase ? <><div className="wlaPanelHeading"><h2>{currentCase.title}</h2></div><p className="wlaCaseRef">{currentCase.source_ref}</p></> : <div className="wlaDetailEmpty"><h2>Choose evidence to investigate</h2><p>Select an alert, raw event, or agent. The assistant will analyze only the selected Wazuh context and cite its source.</p></div>}
