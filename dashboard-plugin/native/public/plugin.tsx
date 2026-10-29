@@ -5,6 +5,7 @@ import { CoreSetup, CoreStart, Plugin } from 'opensearch_dashboards/public';
 import sidebarCss from './sidebar.css';
 import investigationsCss from './investigations.css';
 import { Investigations } from './investigations';
+import { AssistantMarkdown } from './markdown';
 
 type Session = { id: string; title: string };
 type ChatMessage = { role: 'user' | 'assistant'; content: string; tools?: Array<{ name: string; status: string; count: number }> };
@@ -371,7 +372,7 @@ function Assistant({ core }: { core: CoreStart }) {
               {!!item.tools?.length && <div className="wlaToolTrace" aria-label="Wazuh tools used">
                 {item.tools.map((tool, toolIndex) => <span key={toolIndex}>{tool.name.replace(/_/g, ' ')} · {tool.status === 'ok' ? `${tool.count} result${tool.count === 1 ? '' : 's'}` : tool.status}</span>)}
               </div>}
-              <div>{item.content || (busy ? <EuiLoadingSpinner size="s" /> : '')}</div>
+              <div>{item.content ? (item.role === 'assistant' ? <AssistantMarkdown content={item.content} /> : item.content) : (busy ? <EuiLoadingSpinner size="s" /> : '')}</div>
             </article>)}
         </div>
         {error && <div className="wlaError" role="alert">{error}</div>}

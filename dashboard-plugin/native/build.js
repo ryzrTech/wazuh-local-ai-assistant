@@ -32,9 +32,9 @@ async function main() {
     platform: 'browser', target: 'es2020', loader: { '.css': 'text' },
     plugins: [sharedPlugin], logLevel: 'warning',
   });
-  fs.writeFileSync(path.join(publicDir, 'wazuhAiPolicyApply.plugin.js'),
+  fs.writeFileSync(path.join(publicDir, 'wazuhAiMarkdown.plugin.js'),
     publicBundle.outputFiles[0].text +
-    '\n__osdBundles__.define("plugin/wazuhAiPolicyApply/public", function () { return wazuhLocalAiBundle; }, 0);\n');
+    '\n__osdBundles__.define("plugin/wazuhAiMarkdown/public", function () { return wazuhLocalAiBundle; }, 0);\n');
   await esbuild.build({
     entryPoints: [path.join(root, 'server', 'index.ts')],
     outfile: path.join(root, 'server', 'index.js'),

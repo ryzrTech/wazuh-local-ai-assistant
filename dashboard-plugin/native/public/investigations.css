@@ -79,6 +79,7 @@
 .wlaAnalysis h3 { margin: 0 0 3px; color: var(--wla-page-text); font-size: 14px; }
 .wlaAnalysisStatus { margin: 0 0 14px; color: var(--wla-page-muted); font-size: 11px; }
 .wlaAnalysis > div { color: var(--wla-page-text); font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wlaAnalysis .wlaMarkdown, .wlaAnalysis .ouiMarkdownFormat { white-space: normal; }
 .wlaPageError { margin: 15px 22px; color: light-dark(#b42318, #ff8c83); font-size: 12px; }
 .wlaInvestigations button:focus-visible, .wlaInvestigations input:focus-visible, .wlaInvestigations select:focus-visible { outline: 2px solid var(--wla-page-accent); outline-offset: 2px; }
 @media (max-width: 1150px) { .wlaPageGrid { grid-template-columns: 190px minmax(280px, 1fr); } .wlaDetailPanel { grid-column: 1 / -1; min-height: 350px; border-top: 1px solid var(--wla-page-border); } }

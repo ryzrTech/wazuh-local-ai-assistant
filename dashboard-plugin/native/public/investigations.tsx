@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { EuiButton, EuiLoadingSpinner } from '@elastic/eui';
 import { CoreStart } from 'opensearch_dashboards/public';
+import { AssistantMarkdown } from './markdown';
 
 type SourceType = 'alert' | 'archive' | 'agent';
 type RecordItem = { id: string; index: string; source: any };
@@ -254,7 +255,7 @@ export function Investigations({ core }: { core: CoreStart }) {
             : <div className="wlaDetailContent"><h3>{selectedRecord!.source.rule?.description || 'Raw event'}</h3><p>{selectedRecord!.source.timestamp} · {selectedRecord!.source.agent?.name || 'Unknown agent'}</p><dl><dt>Source</dt><dd>{selectedRecord!.index}/{selectedRecord!.id}</dd><dt>Rule</dt><dd>{selectedRecord!.source.rule?.id || 'No triggered rule'}</dd><dt>Location</dt><dd>{selectedRecord!.source.location || 'Unknown'}</dd></dl>{selectedRecord!.source.full_log && <pre>{selectedRecord!.source.full_log}</pre>}</div>}
           <div className="wlaDetailAction"><EuiButton size="s" fill onClick={analyze} isLoading={busy}>{selectedAgent ? 'Draft posture review' : 'Investigate with AI'}</EuiButton><small>Creates a saved, read-only investigation.</small></div>
         </> : currentCase ? <><div className="wlaPanelHeading"><h2>{currentCase.title}</h2></div><p className="wlaCaseRef">{currentCase.source_ref}</p></> : <div className="wlaDetailEmpty"><h2>Choose evidence to investigate</h2><p>Select an alert, raw event, or agent. The assistant will analyze only the selected Wazuh context and cite its source.</p></div>}
-        {(answer || busy) && <div className="wlaAnalysis" aria-live="polite"><h3>AI analysis</h3><p className="wlaAnalysisStatus">{busy ? 'Analyzing selected evidence…' : 'Saved with this investigation · Review before acting'}</p><div>{answer || <EuiLoadingSpinner size="m" />}</div></div>}
+        {(answer || busy) && <div className="wlaAnalysis" aria-live="polite"><h3>AI analysis</h3><p className="wlaAnalysisStatus">{busy ? 'Analyzing selected evidence…' : 'Saved with this investigation · Review before acting'}</p><div>{answer ? <AssistantMarkdown content={answer} /> : <EuiLoadingSpinner size="m" />}</div></div>}
         {error && <p className="wlaPageError" role="alert">{error}</p>}
       </section>
     </div>
