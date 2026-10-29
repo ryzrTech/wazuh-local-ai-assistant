@@ -260,6 +260,24 @@ class Milestone2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["messages"][-1]["content"], pasted)
 
+    def test_reviewed_response_proposal_lifecycle(self):
+        sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]
+        proposal = {"session_id": sid, "action": "restart_agent", "agent_id": "001",
+                    "target_ip": "", "evidence_ref": "", "reason": "Restart this stalled test agent"}
+        self.assertEqual(self.request("POST", "/api/actions/proposals", proposal)[0], 403)
+        status, body = self.request("POST", "/api/actions/proposals", proposal, admin=True)
+        self.assertEqual(status, 201)
+        action_id = json.loads(body)["id"]
+        self.assertEqual(json.loads(self.request("GET", "/api/actions/proposals", admin=True)[1])["proposals"][0]["id"], action_id)
+        self.assertEqual(json.loads(self.request("GET", "/api/actions/proposals", owner="other", admin=True)[1])["proposals"], [])
+        route = f"/api/actions/proposals/{action_id}"
+        self.assertEqual(self.request("POST", route + "/claim", {"result": ""}, admin=True)[0], 200)
+        self.assertEqual(self.request("POST", route + "/claim", {"result": ""}, admin=True)[0], 409)
+        self.assertEqual(self.request("POST", route + "/sent", {"result": "API accepted"}, admin=True)[0], 200)
+        self.assertEqual(self.request("POST", route + "/deny", {"result": "Denied"}, admin=True)[0], 409)
+        bad = {**proposal, "action": "block_ip", "target_ip": "127.0.0.1", "evidence_ref": "wazuh-alerts-example/1"}
+        self.assertEqual(self.request("POST", "/api/actions/proposals", bad, admin=True)[0], 400)
+
     def test_admin_provider_configuration(self):
         self.assertEqual(self.request("GET", "/api/provider/config")[0], 403)
         self.assertEqual(self.request("POST", "/api/provider/test", {"url": self.adapter.base_url})[0], 403)

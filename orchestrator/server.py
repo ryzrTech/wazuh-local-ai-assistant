@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -37,9 +38,16 @@ TOOL_SYSTEM_PROMPT = (
     "claims. A missing result or tool error is not evidence that an event did not happen. "
     "You cannot invoke configuration changes, execute responses, or send notifications. "
     "A separate administrator-reviewed policy screen can apply bounded agent and SCA settings. "
+    "When the signed-in user is an administrator, propose_agent_sca can stage and syntax-check a bounded agent-group SCA change for human review; it does not apply the change. "
+    "For an explicitly requested response, propose_wazuh_action may stage a one-agent restart or a Linux firewall-drop IP action for administrator approval; nothing executes in chat. "
+    "The chat model has no policy apply tool; this does not indicate whether the signed-in human is an administrator. "
+    "No exclusion rule validator or apply workflow is currently installed. Do not claim you can syntax-check or apply an exclusion. "
     "Syscollector software, process, and port records are scan snapshots, not live endpoint state. "
     "For a port-related alert, check get_ports and get_processes before suggesting a cause; if those "
     "snapshots do not identify an owner, say that the cause remains unconfirmed. "
+    "Use get_wazuh_data for agent discovery, rootcheck, file integrity, service and network inventory, "
+    "SCA checks, effective agent configuration, rules, decoders, group membership, manager status, and "
+    "active-response configuration when those sources are relevant. "
     "Treat user-pasted investigation reports as unverified claims. Installed software alone does not "
     "prove which process owned a historical port. Do not claim you ran commands or saw inventory "
     "records unless a current tool result or verified tool audit supports that claim. "
@@ -94,6 +102,35 @@ READ_TOOLS = [
             "min_score": {"type": "number", "minimum": 0, "maximum": 10},
             "offset": {"type": "integer", "minimum": 0, "maximum": 5000}},
             "required": ["agent_id"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_wazuh_data", "description": "Read a bounded page of additional Wazuh investigation data using the signed-in user's permissions. Agent-specific sources require agent_id; agent_groups requires group_id. Use rules with rule_id to inspect one detection rule. No arbitrary API paths or writes.",
+        "parameters": {"type": "object", "properties": {
+            "source": {"type": "string", "enum": ["agents", "rootcheck", "fim", "services", "users", "groups", "network_interfaces", "network_addresses", "network_protocols", "browser_extensions", "hotfixes", "hardware", "os", "agent_daemons", "agent_rootcheck_config", "agent_fim_config", "sca_checks", "ciscat", "rules", "decoders", "agent_groups", "manager_status", "manager_info", "manager_log_summary", "manager_active_response", "manager_commands", "cluster_status", "tasks"]},
+            "agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "group_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+            "rule_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "policy_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+            "search": {"type": "string", "maxLength": 80},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 5000}},
+            "required": ["source"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_agent_sca", "description": "For an administrator, validate and save a bounded SCA group-setting proposal for later human review in AI investigations. This does not apply changes or create an exclusion rule. The agent must belong to the named group.",
+        "parameters": {"type": "object", "properties": {
+            "agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "group": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+            "settings": {"type": "object", "properties": {
+                "enabled": {"type": "string", "enum": ["yes", "no"]},
+                "scan_on_start": {"type": "string", "enum": ["yes", "no"]},
+                "skip_nfs": {"type": "string", "enum": ["yes", "no"]},
+                "interval": {"type": "string", "enum": ["1h", "6h", "12h", "24h", "7d"]}},
+                "required": ["enabled", "scan_on_start", "skip_nfs", "interval"], "additionalProperties": False}},
+            "required": ["agent_id", "group", "settings"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "propose_wazuh_action", "description": "For an administrator, stage an explicitly requested single-agent restart or Linux firewall-drop IP action for separate human approval in AI investigations. For block_ip, evidence_ref must identify an alert whose agent ID and source IP match. Nothing runs in chat. Do not use for exploratory questions.",
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["restart_agent", "block_ip"]},
+            "agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "target_ip": {"type": "string", "maxLength": 45, "description": "IPv4 address for block_ip; empty string for restart_agent"},
+            "evidence_ref": {"type": "string", "maxLength": 400, "description": "Exact alert source_ref for block_ip; empty string for restart_agent"},
+            "reason": {"type": "string", "minLength": 10, "maxLength": 500}},
+            "required": ["action", "agent_id", "target_ip", "evidence_ref", "reason"], "additionalProperties": False}}},
 ]
 MAX_USER_MESSAGE = 16000
 USER_RE = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
@@ -134,6 +171,14 @@ class Store:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE INDEX IF NOT EXISTS tool_audit_owner_session ON tool_audit(owner,session_id,id);
+                CREATE TABLE IF NOT EXISTS action_proposals (
+                    id TEXT PRIMARY KEY, owner TEXT NOT NULL, session_id TEXT NOT NULL,
+                    action TEXT NOT NULL, agent_id TEXT NOT NULL, target_ip TEXT NOT NULL, evidence_ref TEXT NOT NULL,
+                    reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT NOT NULL, completed_at TEXT, result TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS action_proposals_owner ON action_proposals(owner,created_at);
             """)
             if not any(row[1] == "thinking" for row in db.execute("PRAGMA table_info(messages)")):
                 db.execute("ALTER TABLE messages ADD COLUMN thinking TEXT NOT NULL DEFAULT ''")
@@ -181,6 +226,7 @@ class Store:
         if not days:
             return
         cutoff = f"-{days} days"
+        db.execute("DELETE FROM action_proposals WHERE session_id IN (SELECT id FROM sessions WHERE owner=? AND updated_at < datetime('now', ?))", (owner, cutoff))
         db.execute("DELETE FROM investigations WHERE session_id IN (SELECT id FROM sessions WHERE owner=? AND updated_at < datetime('now', ?))", (owner, cutoff))
         db.execute("DELETE FROM tool_audit WHERE session_id IN (SELECT id FROM sessions WHERE owner=? AND updated_at < datetime('now', ?))", (owner, cutoff))
         db.execute("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE owner=? AND updated_at < datetime('now', ?))", (owner, cutoff))
@@ -193,6 +239,7 @@ class Store:
 
     def delete_session(self, owner: str, session_id: str) -> bool:
         with self.lock, self.connect() as db:
+            db.execute("DELETE FROM action_proposals WHERE session_id=? AND owner=?", (session_id, owner))
             db.execute("DELETE FROM investigations WHERE session_id=? AND owner=?", (session_id, owner))
             db.execute("DELETE FROM tool_audit WHERE session_id=? AND owner=?", (session_id, owner))
             db.execute("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE id=? AND owner=?)", (session_id, owner))
@@ -200,6 +247,7 @@ class Store:
 
     def delete_all(self, owner: str) -> int:
         with self.lock, self.connect() as db:
+            db.execute("DELETE FROM action_proposals WHERE owner=?", (owner,))
             db.execute("DELETE FROM investigations WHERE owner=?", (owner,))
             db.execute("DELETE FROM tool_audit WHERE owner=?", (owner,))
             db.execute("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE owner=?)", (owner,))
@@ -279,6 +327,64 @@ class Store:
                  "status": row["status"], "count": row["result_count"], "at": row["created_at"]}
                 for row in reversed(rows)]
 
+    def create_action(self, owner: str, session_id: str, action: str, agent_id: str,
+                      target_ip: str, evidence_ref: str, reason: str) -> dict:
+        if action not in ("restart_agent", "block_ip") or not re.fullmatch(r"\d{1,6}", agent_id or ""):
+            raise ValueError("Invalid action or agent")
+        if not isinstance(target_ip, str):
+            raise ValueError("Invalid target IP")
+        if not isinstance(evidence_ref, str) or len(evidence_ref) > 400:
+            raise ValueError("Invalid evidence reference")
+        if action == "block_ip":
+            if not re.fullmatch(r"wazuh-alerts-[A-Za-z0-9._-]+/[A-Za-z0-9._-]{1,256}", evidence_ref):
+                raise ValueError("Block action requires an exact alert reference")
+            try:
+                address = ipaddress.ip_address(target_ip)
+            except ValueError as error:
+                raise ValueError("Invalid target IP") from error
+            if address.version != 4 or address.is_multicast or address.is_unspecified or address.is_loopback:
+                raise ValueError("Target must be a valid unicast IPv4 address")
+            target_ip = str(address)
+        elif target_ip or evidence_ref:
+            raise ValueError("Restart action does not take a target or alert reference")
+        if not isinstance(reason, str) or not 10 <= len(reason) <= 500 or any(ord(c) < 32 for c in reason):
+            raise ValueError("Give a concise reason for review")
+        proposal_id = str(uuid.uuid4())
+        with self.lock, self.connect() as db:
+            if not db.execute("SELECT 1 FROM sessions WHERE id=? AND owner=?", (session_id, owner)).fetchone():
+                raise ValueError("Conversation not found")
+            if db.execute("SELECT COUNT(*) FROM action_proposals WHERE owner=? AND status='pending' AND expires_at>strftime('%Y-%m-%dT%H:%M:%SZ','now')", (owner,)).fetchone()[0] >= 10:
+                raise ValueError("Review existing pending actions first")
+            db.execute("""INSERT INTO action_proposals(id,owner,session_id,action,agent_id,target_ip,evidence_ref,reason,expires_at)
+                VALUES(?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now','+30 minutes'))""",
+                (proposal_id, owner, session_id, action, agent_id, target_ip, evidence_ref, reason))
+        return self.get_action(owner, proposal_id)
+
+    def get_action(self, owner: str, proposal_id: str) -> dict | None:
+        if not re.fullmatch(r"[a-f0-9-]{36}", proposal_id or ""):
+            return None
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM action_proposals WHERE id=? AND owner=?", (proposal_id, owner)).fetchone()
+        return dict(row) if row else None
+
+    def list_actions(self, owner: str) -> list[dict]:
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM action_proposals WHERE owner=? ORDER BY created_at DESC LIMIT 30", (owner,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def transition_action(self, owner: str, proposal_id: str, action: str, result: str = "") -> dict | None:
+        transitions = {"claim": ("pending", "dispatching"), "deny": ("pending", "denied"),
+                       "sent": ("dispatching", "sent"), "uncertain": ("dispatching", "uncertain")}
+        if action not in transitions or not re.fullmatch(r"[a-f0-9-]{36}", proposal_id or "") or len(result) > 500:
+            raise ValueError("Invalid action transition")
+        before, after = transitions[action]
+        with self.lock, self.connect() as db:
+            expiry = " AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now')" if action == "claim" else ""
+            changed = db.execute(f"""UPDATE action_proposals SET status=?, result=?,
+                completed_at=CASE WHEN ?='dispatching' THEN NULL ELSE CURRENT_TIMESTAMP END
+                WHERE id=? AND owner=? AND status=?{expiry}""", (after, result, after, proposal_id, owner, before)).rowcount
+        return self.get_action(owner, proposal_id) if changed else None
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "WazuhLocalAI/0.1"
@@ -352,6 +458,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"sessions": self.server.store.sessions(owner)})
         if path == "/api/investigations":
             return self._json(200, {"investigations": self.server.store.investigations(owner)})
+        if path == "/api/actions/proposals":
+            return self._json(200, {"proposals": self.server.store.list_actions(owner)}) if self._admin() else self._json(403, {"error": "Administrator access required"})
         match = re.fullmatch(r"/api/investigations/([a-f0-9-]{36})", path)
         if match:
             evidence = self.server.store.investigation_evidence(owner, match.group(1))
@@ -415,6 +523,30 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
             return self._json(201, {"id": session_id})
+        if path == "/api/actions/proposals":
+            if not self._admin():
+                return self._json(403, {"error": "Administrator access required"})
+            payload = self._body(4096)
+            if not isinstance(payload, dict) or set(payload) != {"session_id", "action", "agent_id", "target_ip", "evidence_ref", "reason"}:
+                return self._json(400, {"error": "Invalid action proposal"})
+            try:
+                proposal = self.server.store.create_action(owner, payload["session_id"], payload["action"],
+                    payload["agent_id"], payload["target_ip"], payload["evidence_ref"], payload["reason"])
+            except (ValueError, TypeError):
+                return self._json(400, {"error": "Invalid action proposal"})
+            return self._json(201, proposal)
+        match = re.fullmatch(r"/api/actions/proposals/([a-f0-9-]{36})/(claim|deny|sent|uncertain)", path)
+        if match:
+            if not self._admin():
+                return self._json(403, {"error": "Administrator access required"})
+            payload = self._body(1024)
+            if not isinstance(payload, dict) or set(payload) != {"result"} or not isinstance(payload["result"], str):
+                return self._json(400, {"error": "Invalid action result"})
+            try:
+                proposal = self.server.store.transition_action(owner, match.group(1), match.group(2), payload["result"])
+            except ValueError:
+                return self._json(400, {"error": "Invalid action transition"})
+            return self._json(200, proposal) if proposal else self._json(409, {"error": "Proposal changed or expired"})
         if path == "/api/model/complete":
             payload = self._body(196608)
             messages = payload.get("messages") if isinstance(payload, dict) else None

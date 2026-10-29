@@ -66,6 +66,14 @@ async function managerRead(context: any, path: string, params: Record<string, un
   return result.data?.data?.affected_items || [];
 }
 
+async function managerWrite(context: any, path: string, params: Record<string, unknown> = {}, body?: unknown) {
+  const hosts = await context.wazuh_core.manageHosts.get(undefined, { excludePassword: true });
+  const apiHostID = hosts[0]?.id;
+  if (!apiHostID || !context.wazuh_core.manageHosts.isEnabledAuthWithRunAs(apiHostID)) throw new Error('Wazuh API run-as is required');
+  const token = await context.wazuh_core.api.client.asCurrentUser.authenticate(apiHostID);
+  return context.wazuh_core.serverAPIClient._request('PUT', path, { params, body, timeout: 10000 }, { apiHostID, token });
+}
+
 function policyRequest(action: 'validator' | 'apply', path: string, payload: unknown): Promise<{ status: number; body: any }> {
   const token = action === 'validator' ? process.env.ASSISTANT_POLICY_TOKEN || '' : process.env.ASSISTANT_POLICY_APPLY_TOKEN || '';
   if (token.length < 32) return Promise.reject(new Error('policy token missing'));
@@ -119,8 +127,8 @@ function adminAllowed(identity: { roles: unknown[] }) {
   return identity.roles.some((role: unknown) => typeof role === 'string' && allowed.has(role));
 }
 
-async function proxyJson(method: 'GET' | 'POST', path: string, owner: string, payload?: unknown): Promise<{ status: number; data: any }> {
-  const upstream = await proxy(method, path, owner, payload);
+async function proxyJson(method: 'GET' | 'POST', path: string, owner: string, payload?: unknown, admin = false): Promise<{ status: number; data: any }> {
+  const upstream = await proxy(method, path, owner, payload, admin);
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of upstream.body) {
@@ -168,6 +176,8 @@ function textGate(stream: PassThrough) {
 type ToolObservation = { name: string; args: Record<string, unknown>; count: number; status: string; refs: string[] };
 
 function groundedFallback(observations: ToolObservation[], reason: 'tool_markup' | 'model_unavailable' | 'empty' = 'tool_markup'): string {
+  const proposals = observations.filter((item) => item.status === 'ok' && item.name.startsWith('propose_'));
+  if (proposals.length) return 'A proposal was saved, but I could not complete the model answer. Open AI investigations to review the saved proposal before trying again. No action was executed by chat.';
   const searches = observations.filter((item) => item.name.startsWith('search_'));
   if (!searches.length) return 'I could not complete the model answer, and no Wazuh search ran. Please retry your question.';
   const lines = searches.map((item) => {
@@ -180,6 +190,66 @@ function groundedFallback(observations: ToolObservation[], reason: 'tool_markup'
   const detail = reason === 'tool_markup' ? 'The searches listed above really ran. The model printed further tool instructions as text; those additional searches did not run.'
     : reason === 'empty' ? 'The model did not provide a usable final answer.' : 'The model answer became unavailable after these searches.';
   return `Completed Wazuh searches:\n${lines.join('\n')}\n\nThese results cover only the searches listed above. ${detail} An absence of matches does not rule out detections outside this search scope.`;
+}
+
+export async function proposeAgentSca(context: any, owner: string, admin: boolean, raw: string) {
+  if (!admin) throw Object.assign(new Error('Administrator review is required'), { statusCode: 403 });
+  if (typeof raw !== 'string' || raw.length > 2048) throw new Error('Invalid proposal arguments');
+  let args: any;
+  try { args = JSON.parse(raw); } catch { throw new Error('Invalid proposal arguments'); }
+  if (!args || typeof args !== 'object' || Array.isArray(args) ||
+      Object.keys(args).sort().join(',') !== 'agent_id,group,settings' ||
+      !AGENT_ID.test(args.agent_id) || !GROUP.test(args.group) || args.group === '.' || args.group === '..' ||
+      !args.settings || typeof args.settings !== 'object' || Array.isArray(args.settings) ||
+      Object.keys(args.settings).sort().join(',') !== 'enabled,interval,scan_on_start,skip_nfs' ||
+      !['yes', 'no'].includes(args.settings.enabled) ||
+      !['yes', 'no'].includes(args.settings.scan_on_start) ||
+      !['yes', 'no'].includes(args.settings.skip_nfs) ||
+      !['1h', '6h', '12h', '24h', '7d'].includes(args.settings.interval)) throw new Error('Invalid proposal scope or settings');
+  const agents = await managerRead(context, '/agents', { agents_list: args.agent_id, limit: 1 });
+  if (!agents.length || !agentGroups(agents[0]).includes(args.group)) throw new Error('Agent is not in the selected group');
+  const checked = await policyRequest('validator', '/validate', {
+    owner, agent_id: args.agent_id, group: args.group, settings: args.settings,
+  });
+  if (checked.status !== 200) throw new Error('Policy validator rejected the proposal');
+  return { arguments: args, count: checked.body.valid && checked.body.proposal_id ? 1 : 0,
+    data: { retrieved_at: new Date().toISOString(), source_ref: `agent:${args.agent_id}`,
+      valid: !!checked.body.valid, proposal_id: checked.body.proposal_id || null,
+      expires_at: checked.body.expires_at || null, scope: String(checked.body.scope || '').slice(0, 300),
+      diff: String(checked.body.diff || '').slice(0, 8000),
+      validator_output: String(checked.body.validator_output || '').slice(0, 1200),
+      next_step: 'A signed-in administrator must open this agent in AI investigations, inspect the saved proposal, and explicitly apply it. Chat cannot apply it.' } };
+}
+
+export async function proposeWazuhAction(context: any, owner: string, admin: boolean, sessionId: string, raw: string) {
+  if (!admin) throw Object.assign(new Error('Administrator review is required'), { statusCode: 403 });
+  if (typeof raw !== 'string' || raw.length > 2048) throw new Error('Invalid action arguments');
+  let args: any;
+  try { args = JSON.parse(raw); } catch { throw new Error('Invalid action arguments'); }
+  if (!args || typeof args !== 'object' || Array.isArray(args) ||
+      Object.keys(args).sort().join(',') !== 'action,agent_id,evidence_ref,reason,target_ip' ||
+      !['restart_agent', 'block_ip'].includes(args.action) || !AGENT_ID.test(args.agent_id) ||
+      typeof args.target_ip !== 'string' || typeof args.evidence_ref !== 'string' || typeof args.reason !== 'string' ||
+      args.reason.length < 10 || args.reason.length > 500) throw new Error('Invalid action scope');
+  const agents = await managerRead(context, '/agents', { agents_list: args.agent_id, limit: 1 });
+  if (!agents.length) throw new Error('Agent unavailable or not permitted');
+  if (args.action === 'block_ip') {
+    const match = /^(wazuh-alerts-[A-Za-z0-9._-]+)\/([A-Za-z0-9._-]{1,256})$/.exec(args.evidence_ref);
+    if (!match) throw new Error('Block action requires an exact alert source reference');
+    const result = await context.core.opensearch.client.asCurrentUser.transport.request({
+      method: 'GET', path: `/${match[1]}/_doc/${match[2]}`,
+    });
+    const alert = (result.body || result)._source || {};
+    if (String(alert.agent?.id) !== args.agent_id || String(alert.data?.srcip || alert.srcip) !== args.target_ip)
+      throw new Error('Alert agent and source IP must match the proposed action');
+  } else if (args.target_ip || args.evidence_ref) throw new Error('Restart action does not take a target or alert');
+  const proposal = await proxyJson('POST', '/api/actions/proposals', owner, { ...args, session_id: sessionId }, true);
+  if (proposal.status !== 201) throw new Error('Action proposal was not saved');
+  return { arguments: args, count: 1, data: { proposal_id: proposal.data.id,
+    action: proposal.data.action, agent_id: proposal.data.agent_id, target_ip: proposal.data.target_ip,
+    evidence_ref: proposal.data.evidence_ref,
+    reason: proposal.data.reason, expires_at: proposal.data.expires_at,
+    next_step: 'An administrator must review this exact action in AI investigations and approve it. Nothing was executed.' } };
 }
 
 async function readModelStream(owner: string, path: string, messages: any[], onEvent: (event: string, payload: any) => void) {
@@ -253,7 +323,8 @@ async function streamFinalAnswer(owner: string, messages: any[], stream: PassThr
 
 async function chatWithTools(context: any, owner: string, admin: boolean, sessionId: string, content: string, retry: boolean, stream: PassThrough) {
   const allowed = new Set(['get_capabilities', 'search_alerts', 'search_raw_events', 'get_agent', 'get_sca_results',
-    'get_software_inventory', 'get_processes', 'get_ports', 'get_vulnerabilities']);
+    'get_software_inventory', 'get_processes', 'get_ports', 'get_vulnerabilities', 'get_wazuh_data',
+    'propose_agent_sca', 'propose_wazuh_action']);
   let stage = 'prepare';
   try {
     const prepared = await proxyJson('POST', `/api/sessions/${sessionId}/turn`, owner, { content, retry });
@@ -309,7 +380,11 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
         } else {
           callsUsed++;
           try {
-            const executed = await executeReadTool(context, name, call.function.arguments, admin, managerRead);
+            const executed = name === 'propose_agent_sca'
+              ? await proposeAgentSca(context, owner, admin, call.function.arguments)
+              : name === 'propose_wazuh_action'
+                ? await proposeWazuhAction(context, owner, admin, sessionId, call.function.arguments)
+                : await executeReadTool(context, name, call.function.arguments, admin, managerRead);
             argumentsForAudit = executed.arguments;
             count = executed.count;
             result = executed.data;
@@ -417,6 +492,67 @@ export class LocalAiServerPlugin implements Plugin {
       } catch { return response.customError({ statusCode: 503, body: { message: 'Capabilities unavailable' } }); }
     });
     router.get({ path: PREFIX + '/sessions', validate: false }, handle('GET', '/sessions', () => '/api/sessions'));
+    router.get({ path: PREFIX + '/actions/proposals', validate: false },
+      handle('GET', '/actions/proposals', () => '/api/actions/proposals', true));
+    router.post({ path: PREFIX + '/actions/proposals/{id}/deny', validate: {
+      params: schema.object({ id: schema.string() }), body: schema.object({}),
+    } }, async (context: any, request: any, response: any) => {
+      if (!SESSION_ID.test(request.params.id)) return response.badRequest();
+      try {
+        const identity = await currentIdentity(context);
+        if (!identity) return response.unauthorized();
+        if (!adminAllowed(identity)) return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
+        const result = await proxyJson('POST', `/api/actions/proposals/${request.params.id}/deny`, identity.owner,
+          { result: 'Denied by administrator' }, true);
+        return response.custom({ statusCode: result.status, body: result.data });
+      } catch { return response.customError({ statusCode: 503, body: { message: 'Action proposal unavailable' } }); }
+    });
+    router.post({ path: PREFIX + '/actions/proposals/{id}/approve', validate: {
+      params: schema.object({ id: schema.string() }), body: schema.object({}),
+    } }, async (context: any, request: any, response: any) => {
+      if (!SESSION_ID.test(request.params.id)) return response.badRequest();
+      let claimed = false;
+      let owner = '';
+      try {
+        const identity = await currentIdentity(context);
+        if (!identity) return response.unauthorized();
+        if (!adminAllowed(identity)) return response.customError({ statusCode: 403, body: { message: 'Administrator access required' } });
+        owner = identity.owner;
+        const listed = await proxyJson('GET', '/api/actions/proposals', owner, undefined, true);
+        const proposal = listed.data.proposals?.find((item: any) => item.id === request.params.id);
+        if (!proposal || proposal.status !== 'pending' || !AGENT_ID.test(proposal.agent_id) ||
+            !['restart_agent', 'block_ip'].includes(proposal.action)) return response.customError({ statusCode: 409, body: { message: 'Proposal unavailable or no longer pending' } });
+        const agents = await managerRead(context, '/agents', { agents_list: proposal.agent_id, limit: 1 });
+        if (!agents.length || agents[0].status !== 'active') return response.customError({ statusCode: 409, body: { message: 'Selected agent is not active' } });
+        if (proposal.action === 'block_ip' && !/linux|ubuntu|debian|centos|red hat|rocky|fedora|almalinux/i.test(String(agents[0].os?.name || '')))
+          return response.customError({ statusCode: 409, body: { message: 'Firewall response requires a supported Linux agent' } });
+        if (proposal.action === 'block_ip') {
+          const match = /^(wazuh-alerts-[A-Za-z0-9._-]+)\/([A-Za-z0-9._-]{1,256})$/.exec(proposal.evidence_ref || '');
+          if (!match) return response.customError({ statusCode: 409, body: { message: 'Alert evidence is unavailable' } });
+          const result = await context.core.opensearch.client.asCurrentUser.transport.request({ method: 'GET', path: `/${match[1]}/_doc/${match[2]}` });
+          const alert = (result.body || result)._source || {};
+          if (String(alert.agent?.id) !== proposal.agent_id || String(alert.data?.srcip || alert.srcip) !== proposal.target_ip)
+            return response.customError({ statusCode: 409, body: { message: 'Alert evidence no longer matches the action' } });
+        }
+        const claim = await proxyJson('POST', `/api/actions/proposals/${request.params.id}/claim`, owner, { result: '' }, true);
+        if (claim.status !== 200) return response.custom({ statusCode: claim.status, body: claim.data });
+        claimed = true;
+        const result = proposal.action === 'restart_agent'
+          ? await managerWrite(context, `/agents/${proposal.agent_id}/restart`)
+          : await managerWrite(context, '/active-response', { agents_list: proposal.agent_id },
+            { command: 'firewall-drop', alert: { data: { srcip: proposal.target_ip } } });
+        const api = result.data || result;
+        if (api.error || api.data?.total_failed_items || (Array.isArray(api.data?.failed_items) && api.data.failed_items.length))
+          throw new Error('Wazuh API did not confirm acceptance');
+        const saved = await proxyJson('POST', `/api/actions/proposals/${request.params.id}/sent`, owner,
+          { result: 'Wazuh API accepted the action; endpoint effect is not yet verified' }, true);
+        return response.custom({ statusCode: saved.status, body: saved.data });
+      } catch {
+        if (claimed && owner) await proxyJson('POST', `/api/actions/proposals/${request.params.id}/uncertain`, owner,
+          { result: 'Dispatch outcome uncertain; inspect Wazuh before any new request' }, true).catch(() => undefined);
+        return response.customError({ statusCode: 503, body: { message: 'Action outcome uncertain; inspect Wazuh before retrying' } });
+      }
+    });
     router.post({ path: PREFIX + '/sessions', validate: { body: schema.object({}) } }, handle('POST', '/sessions', () => '/api/sessions'));
     router.delete({ path: PREFIX + '/sessions', validate: false }, handle('DELETE', '/sessions', () => '/api/sessions'));
     router.get({ path: PREFIX + '/settings', validate: false }, handle('GET', '/settings', () => '/api/settings'));

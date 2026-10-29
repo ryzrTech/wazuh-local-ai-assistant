@@ -15,6 +15,17 @@
 .wlaPageHeader h1 { margin: 0 0 6px; color: var(--wla-page-text); font-size: clamp(25px, 2vw, 31px); font-weight: 700; letter-spacing: -.025em; }
 .wlaPageHeader p { margin: 0; color: var(--wla-page-muted); font-size: 13px; }
 .wlaReadOnly { flex: none; margin-top: 5px; padding: 5px 9px; border: 1px solid var(--wla-page-border); border-radius: 5px; color: var(--wla-page-muted); font-size: 11px; font-weight: 600; }
+.wlaActionQueue { margin: 0 0 18px; padding: 16px 18px; border: 1px solid var(--wla-page-border); border-radius: 9px; background: var(--wla-page-surface); }
+.wlaActionQueue h2 { margin: 0 0 5px; color: var(--wla-page-text); font-size: 15px; }
+.wlaActionQueue > p { margin: 0 0 13px; color: var(--wla-page-muted); font-size: 11px; }
+.wlaActionRow { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 11px 0; border-top: 1px solid var(--wla-page-border); }
+.wlaActionRow > div:first-child { min-width: 0; }
+.wlaActionRow strong, .wlaActionRow span, .wlaActionRow small { display: block; overflow-wrap: anywhere; }
+.wlaActionRow strong { color: var(--wla-page-text); font-size: 12px; }
+.wlaActionRow span { margin-top: 4px; color: var(--wla-page-muted); font-size: 11px; }
+.wlaActionRow small { margin-top: 4px; color: var(--wla-page-muted); font-size: 10px; }
+.wlaActionButtons { display: flex; flex: none; gap: 7px; }
+.wlaActionStatus { margin: 0 0 16px; color: var(--wla-page-muted); font-size: 12px; }
 .wlaPageGrid { display: grid; grid-template-columns: minmax(190px, 230px) minmax(300px, 390px) minmax(340px, 1fr); gap: 1px; min-height: min(760px, calc(100vh - 230px)); border: 1px solid var(--wla-page-border); border-radius: 10px; overflow: hidden; background: var(--wla-page-border); }
 .wlaCaseRail, .wlaSourcePanel, .wlaDetailPanel { min-width: 0; min-height: 0; background: var(--wla-page-surface); }
 .wlaCaseRail, .wlaSourcePanel { display: flex; flex-direction: column; }

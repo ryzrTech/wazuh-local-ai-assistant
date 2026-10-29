@@ -12,6 +12,8 @@ type Proposal = { group: string; base_sha256: string; diff: string; valid: boole
   scope: string; next_check: string; proposal_id?: string; expires_at?: string; status?: string; applied_at?: string };
 type StoredProposal = { id: string; group_name: string; status: string; created_at: string; applied_at?: string;
   diff: string; base_sha256: string; validator_output: string; expires_at: string };
+type ActionProposal = { id: string; action: 'restart_agent' | 'block_ip'; agent_id: string; target_ip: string;
+  evidence_ref: string; reason: string; status: string; created_at: string; expires_at: string; result: string };
 
 export function Investigations({ core }: { core: CoreStart }) {
   const [sourceType, setSourceType] = useState<SourceType>('alert');
@@ -36,6 +38,9 @@ export function Investigations({ core }: { core: CoreStart }) {
   const [applying, setApplying] = useState(false);
   const [verification, setVerification] = useState('');
   const [storedProposals, setStoredProposals] = useState<StoredProposal[]>([]);
+  const [actionProposals, setActionProposals] = useState<ActionProposal[]>([]);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionStatus, setActionStatus] = useState('');
 
   const endpoint = (path: string) => core.http.basePath.prepend('/api/wazuh_local_ai' + path);
   async function api(path: string, options: RequestInit = {}) {
@@ -51,6 +56,24 @@ export function Investigations({ core }: { core: CoreStart }) {
   async function loadCases() {
     const data = await api('/investigations');
     setInvestigations(data.investigations || []);
+  }
+
+  async function loadActions() {
+    const data = await api('/actions/proposals');
+    setActionProposals(data.proposals || []);
+  }
+
+  async function reviewAction(item: ActionProposal, decision: 'approve' | 'deny') {
+    const detail = item.action === 'restart_agent' ? `restart agent ${item.agent_id}` :
+      `send firewall-drop for ${item.target_ip} to agent ${item.agent_id}`;
+    if (!window.confirm(`${decision === 'approve' ? 'Approve' : 'Deny'} this exact Wazuh action: ${detail}?\n\nReason: ${item.reason}${item.evidence_ref ? `\nAlert: ${item.evidence_ref}` : ''}`)) return;
+    setActionBusy(true); setActionStatus('');
+    try {
+      const result = await api(`/actions/proposals/${item.id}/${decision}`, { method: 'POST', body: '{}' });
+      setActionStatus(result.result || result.status || 'Action reviewed.');
+      await loadActions();
+    } catch (cause) { setActionStatus(cause instanceof Error ? cause.message : 'Action review failed.'); }
+    finally { setActionBusy(false); }
   }
 
   async function loadSource(kind: SourceType = sourceType) {
@@ -69,7 +92,7 @@ export function Investigations({ core }: { core: CoreStart }) {
     finally { setLoading(false); }
   }
 
-  useEffect(() => { loadCases().catch(() => undefined); loadSource('alert'); }, []);
+  useEffect(() => { loadCases().catch(() => undefined); loadActions().catch(() => undefined); loadSource('alert'); }, []);
 
   async function selectAgent(agent: Agent) {
     setSelectedAgent(agent); setSelectedRecord(null); setCurrentCase(null); setAnswer(''); setPolicies([]); setError(''); setProposal(null); setVerification(''); setStoredProposals([]); setGroup(agent.groups?.[0] || '');
@@ -205,6 +228,16 @@ export function Investigations({ core }: { core: CoreStart }) {
       <div><h1>AI investigations</h1><p>Investigate Wazuh evidence, then review what the assistant found.</p></div>
       <span className="wlaReadOnly">Reviewed policy changes</span>
     </header>
+    {actionProposals.some((item) => item.status === 'pending') && <section className="wlaActionQueue" aria-label="Actions requiring approval">
+      <h2>Actions requiring approval</h2><p>Review each exact target and reason. Approval sends the command through your Wazuh permissions; endpoint effect must be checked separately.</p>
+      {actionProposals.filter((item) => item.status === 'pending').map((item) => <div className="wlaActionRow" key={item.id}>
+        <div><strong>{item.action === 'restart_agent' ? 'Restart agent' : 'Firewall drop IP'} · Agent {item.agent_id}{item.target_ip ? ` · ${item.target_ip}` : ''}</strong>
+          <span>{item.reason}</span>{item.evidence_ref && <small>Alert: {item.evidence_ref}</small>}<small>Expires {new Date(item.expires_at).toLocaleString()}</small></div>
+        <div className="wlaActionButtons"><EuiButton size="s" onClick={() => reviewAction(item, 'deny')} isDisabled={actionBusy}>Deny</EuiButton>
+          <EuiButton size="s" fill onClick={() => reviewAction(item, 'approve')} isDisabled={actionBusy || Date.parse(item.expires_at) <= Date.now()}>Approve</EuiButton></div>
+      </div>)}
+    </section>}
+    {actionStatus && <p className="wlaActionStatus" role="status">{actionStatus}</p>}
     <div className="wlaPageGrid">
       <aside className="wlaCaseRail" aria-label="Saved investigations">
         <div className="wlaPanelHeading"><h2>Investigations</h2><span>{investigations.length}</span></div>

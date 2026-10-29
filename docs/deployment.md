@@ -1,6 +1,6 @@
 # Deploy the native sidebar
 
-This integration targets Wazuh 4.14.9 with OpenSearch Dashboards 2.19.6. Check installed versions before deploying. Chat and investigations read bounded Wazuh alerts, raw events, agents, SCA results, Syscollector inventory, and vulnerability state in the signed-in user's context. The model has no configuration write or response tools; a separate administrator-reviewed workflow can apply bounded agent/SCA settings. A model API key and valid model ID are required for AI replies; investigation browsing and conversation storage can run without them.
+This integration targets Wazuh 4.14.9 with OpenSearch Dashboards 2.19.6. Check installed versions before deploying. Chat and investigations read bounded Wazuh alerts, raw events, agents, SCA results, Syscollector inventory, and vulnerability state in the signed-in user's context. A model API key and valid model ID are required for AI replies; investigation browsing and conversation storage can run without them. The chat broker additionally supports bounded reads of rootcheck, FIM, services, users, network inventory, rules, decoders, group membership, manager status, and other named Wazuh sources. An administrator may ask the model to stage an agent/SCA proposal or a one-agent response proposal. The model cannot apply or dispatch either; a human must review and approve each proposal in AI investigations. Arbitrary commands are not exposed to chat.
 
 ## Build
 
@@ -12,7 +12,7 @@ npm ci
 npm run build
 ```
 
-The build creates `server/index.js` and `target/public/wazuhAiChatReliable.plugin.js`. It uses Dashboard's shared React and EUI libraries; no Dashboard source checkout is required. The build files are ignored by Git. Package only the manifest, package metadata, compiled server entry point, and public bundle for installation.
+The build creates `server/index.js` and `target/public/wazuhAiChatOps.plugin.js`. It uses Dashboard's shared React and EUI libraries; no Dashboard source checkout is required. The build files are ignored by Git. Package only the manifest, package metadata, compiled server entry point, and public bundle for installation.
 
 ## Configure the service
 
@@ -31,9 +31,9 @@ Use the same proxy and admin tokens in a protected `EnvironmentFile` for the Das
 
 ## Activate the Dashboard plugin
 
-Place the compiled plugin in `plugins/wazuhAiChatReliable` under the installed Dashboard root. The directory must contain `opensearch_dashboards.json`, `package.json`, `server/index.js`, and `target/public/wazuhAiChatReliable.plugin.js`. Add the protected proxy and admin tokens to the Dashboard systemd environment, then restart Dashboard. Confirm the plugin appears in `opensearch-dashboards-plugin list --allow-root`, startup logs include `wazuhAiChatReliable`, and the HTTPS entry page responds. Verify the sidebar in an authenticated session. Provider setup requires the `all_access` role by default; `ASSISTANT_ADMIN_ROLES` can define other indexer roles.
+Place the compiled plugin in `plugins/wazuhAiChatOps` under the installed Dashboard root. The directory must contain `opensearch_dashboards.json`, `package.json`, `server/index.js`, and `target/public/wazuhAiChatOps.plugin.js`. Add the protected proxy and admin tokens to the Dashboard systemd environment, then restart Dashboard. Confirm the plugin appears in `opensearch-dashboards-plugin list --allow-root`, startup logs include `wazuhAiChatOps`, and the HTTPS entry page responds. Verify the sidebar in an authenticated session. Provider setup requires the `all_access` role by default; `ASSISTANT_ADMIN_ROLES` can define other indexer roles.
 
-The Dashboard distribution serves plugin JavaScript with a one-year browser cache lifetime. Deployments that reuse an existing plugin ID and asset path may leave users on the old UI even after a service restart. Use a fresh plugin asset path for a forced update, or have users explicitly clear the cached plugin asset. The current `wazuhAiChatReliable` ID uses a fresh asset path.
+The Dashboard distribution serves plugin JavaScript with a one-year browser cache lifetime. Deployments that reuse an existing plugin ID and asset path may leave users on the old UI even after a service restart. Use a fresh plugin asset path for a forced update, or have users explicitly clear the cached plugin asset. The current `wazuhAiChatOps` ID uses a fresh asset path.
 
 In sidebar settings, an administrator enters an approved `/v1` API URL and dedicated key, tests the connection, selects a returned model, and saves. The key is stored in a mode 0600 server file and is never returned to the browser. Changing allowlisted hosts or service tokens requires a service restart. Conversation retention and deletion are per user. See [investigations.md](investigations.md) for raw-event archiving and retention setup.
 
@@ -45,7 +45,7 @@ When the provider emits `reasoning_content` or `reasoning` chunks, the assistant
 
 Text emitted before a tool call stays visible as an **Investigation updates** note and is saved with the answer. Syscollector package, process, and port records are scan snapshots, so a missing port or process cannot establish what owned a port when an earlier alert fired. Vulnerabilities come from the current `wazuh-states-vulnerabilities-*` index and may require additional signed-in user permissions.
 
-Chat responses stream into the panel as model text arrives. The transcript stays at the newest message during a turn. With an empty composer, Up Arrow recalls the last question from the active conversation. If a model request fails after saving the question, sending that same question again resumes the unanswered turn without storing a duplicate user message. The model can make two bounded read-tool rounds, with at most eight actual read calls, before a final answer; searches stay under the signed-in user's Wazuh permissions.
+Chat responses stream into the panel as model text arrives. The transcript stays at the newest message during a turn. With an empty composer, Up Arrow recalls the last question from the active conversation. If a model request fails after saving the question, sending that same question again resumes the unanswered turn without storing a duplicate user message. The model can make four bounded tool rounds, with at most eight actual tool calls, before a final answer; searches stay under the signed-in user's Wazuh permissions.
 
 Dashboard serves assistant SSE with identity encoding to prevent HTTP compression from buffering incremental text. The broker rejects model-generated tool-call markup in prose; it records and reports only tool requests that were actually executed.
 
@@ -54,6 +54,10 @@ Dashboard serves assistant SSE with identity encoding to prevent HTTP compressio
 Install `policy_engine/` beside `orchestrator/` under `/opt/wazuh-local-ai`. Create `/var/lib/wazuh-ai-policies` and its `backups/` child as mode 0700 directories owned by the Wazuh service account. Install `deploy/wazuh-ai-policy-validator.service` and `deploy/wazuh-ai-policy-apply.service`, adjusting the account and Wazuh shared-config path for the installation. Generate distinct 32-character-or-longer tokens as `ASSISTANT_POLICY_TOKEN` and `ASSISTANT_POLICY_APPLY_TOKEN` in root-only service environment files and the Dashboard's protected environment file. Start both services and confirm loopback `/health` on ports 8766 and 8768. Both services must reject unauthenticated requests. The validator has only the private policy directory writable; the apply service additionally has the Wazuh shared group directory writable.
 
 In the AI investigations page, select an agent in **Agents & SCA**, choose one of its assigned groups, select the SCA settings, and click **Validate proposal**. The Dashboard checks the administrator role and the agent's group membership before forwarding the request. The validator stages the candidate in a private temporary file, runs Wazuh `verify-agent-conf`, and returns the complete diff. Valid proposals remain available to their owner for 30 minutes. After reviewing the diff and scope, an administrator must explicitly click **Apply reviewed change**. The executor rechecks the active hash and native syntax, saves a private backup, and writes atomically. **Check agent sync and scan** reports the selected agent's current status and latest SCA scan; review other group members separately. **Roll back** restores the saved file only when no intervening edit occurred. The model cannot invoke apply or rollback.
+
+## Review response actions
+
+An administrator can ask chat to stage a restart for one agent or an IP block for one Linux agent. A block proposal must cite an exact Wazuh alert whose agent ID and source IP match the requested target. Chat saves the proposal for 30 minutes and cannot dispatch it. In **AI investigations**, inspect the agent, target, evidence, and reason, then approve or deny that exact proposal. Approval checks the agent and alert again and sends the fixed Wazuh API request through the signed-in administrator's Wazuh permissions. A proposal is claimed once before dispatch and cannot be retried automatically. If the API outcome is uncertain, inspect Wazuh before making a new request. API acceptance does not prove the endpoint applied the action. The queue is limited to ten pending actions per owner. No arbitrary commands, group-wide actions, or exclusion-rule writes are available in this workflow.
 
 ## Set up alerting
 
