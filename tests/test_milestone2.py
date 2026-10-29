@@ -10,7 +10,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from orchestrator.server import Server, Store
+from orchestrator.server import READ_TOOLS, Server, Store
 from provider_registry.openai_compatible import Provider, ProviderError
 
 
@@ -34,7 +34,12 @@ class FakeProvider(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         if request.get("tools"):
-            if any(message.get("content") == "Just explain" for message in request["messages"]):
+            if any(message.get("content") == "Five searches" for message in request["messages"]):
+                for index in range(5):
+                    delta = {"choices": [{"delta": {"tool_calls": [{"index": index, "id": f"call_{index}",
+                        "type": "function", "function": {"name": "search_alerts", "arguments": '{"hours":24}'}}]}}]}
+                    self.wfile.write(("data: " + json.dumps(delta) + "\n\n").encode())
+            elif any(message.get("content") == "Just explain" for message in request["messages"]):
                 self.wfile.write(b'data: {"choices":[{"delta":{"content":"This "}}]}\n\n')
                 self.wfile.flush()
                 self.wfile.write(b'data: {"choices":[{"delta":{"content":"is text."}}]}\n\n')
@@ -154,13 +159,16 @@ class Milestone2Tests(unittest.TestCase):
         self.assertIn(b'event: reset', stream)
         self.assertIn(b'event: turn', stream)
         self.assertIn(b'event: done', stream)
-
         status, stream = self.request("POST", "/api/model/complete-stream", {"messages": [
             {"role": "system", "content": "Explain"}, {"role": "user", "content": "Just explain"}]})
         self.assertEqual(status, 200)
         self.assertEqual(stream.count(b'event: delta'), 2)
         self.assertNotIn(b'event: reset', stream)
         self.assertIn(b'event: done', stream)
+
+    def test_provider_accepts_bounded_multi_search_turn(self):
+        turn = self.adapter.complete_with_tools([{"role": "user", "content": "Five searches"}], READ_TOOLS)
+        self.assertEqual(len(turn["tool_calls"]), 5)
 
     def test_cross_user_and_auth_denied(self):
         sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]

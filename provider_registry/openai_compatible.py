@@ -202,7 +202,7 @@ class Provider:
                     if not isinstance(item, dict) or type(item.get("index")) is not int:
                         raise ProviderError("Malformed model tool call")
                     index = item["index"]
-                    if index < 0 or index > 3:
+                    if index < 0 or index > 7:
                         raise ProviderError("Too many model tool calls")
                     call = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
                     if isinstance(item.get("id"), str):

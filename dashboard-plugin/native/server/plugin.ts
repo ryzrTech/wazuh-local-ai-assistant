@@ -138,6 +138,50 @@ function sendEvent(stream: PassThrough, event: string, data: unknown) {
   stream.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function textGate(stream: PassThrough) {
+  let pending = '';
+  let contaminated = false;
+  const marker = /<\s*(?:tool_call\b|function\s*=|parameter\s*=)/i;
+  return {
+    push(text: string) {
+      if (contaminated) return;
+      pending += text;
+      if (marker.test(pending)) {
+        contaminated = true;
+        pending = '';
+        sendEvent(stream, 'reset', {});
+        return;
+      }
+      if (pending.length > 16) {
+        sendEvent(stream, 'delta', { text: pending.slice(0, -16) });
+        pending = pending.slice(-16);
+      }
+    },
+    reset() { pending = ''; contaminated = false; sendEvent(stream, 'reset', {}); },
+    finish() {
+      if (!contaminated && pending) sendEvent(stream, 'delta', { text: pending });
+      return !contaminated;
+    },
+  };
+}
+
+type ToolObservation = { name: string; args: Record<string, unknown>; count: number; status: string; refs: string[] };
+
+function groundedFallback(observations: ToolObservation[], reason: 'tool_markup' | 'model_unavailable' | 'empty' = 'tool_markup'): string {
+  const searches = observations.filter((item) => item.name.startsWith('search_'));
+  if (!searches.length) return 'I could not complete the model answer, and no Wazuh search ran. Please retry your question.';
+  const lines = searches.map((item) => {
+    const hours = typeof item.args.hours === 'number' ? `, last ${item.args.hours} hours` : '';
+    const term = typeof item.args.text === 'string' ? `, text ${JSON.stringify(item.args.text)}` : '';
+    const refs = item.refs.length ? ` Sources: ${item.refs.join(', ')}.` : '';
+    const outcome = item.status === 'ok' ? `${item.count} matching record${item.count === 1 ? '' : 's'}` : 'search unavailable';
+    return `- ${item.name}${hours}${term}: ${outcome}.${refs}`;
+  });
+  const detail = reason === 'tool_markup' ? 'The model printed additional tool instructions, but those were not executed.'
+    : reason === 'empty' ? 'The model did not provide a usable final answer.' : 'The model answer became unavailable after these searches.';
+  return `Completed Wazuh searches:\n${lines.join('\n')}\n\nThese results cover only the searches listed above. ${detail} An absence of matches does not rule out detections outside this search scope.`;
+}
+
 async function readModelStream(owner: string, path: string, messages: any[], onEvent: (event: string, payload: any) => void) {
   const upstream = await proxy('POST', path, owner, { messages });
   if (upstream.status !== 200) { upstream.body.resume(); throw new Error('Model request failed'); }
@@ -164,35 +208,37 @@ async function readModelStream(owner: string, path: string, messages: any[], onE
   if (!completed) throw new Error('Model stream ended early');
 }
 
-async function streamModelTurn(owner: string, messages: any[], stream: PassThrough): Promise<any> {
+async function streamModelTurn(owner: string, messages: any[], stream: PassThrough): Promise<{ turn: any; clean: boolean }> {
   let turn: any;
   let contentSize = 0;
+  const gate = textGate(stream);
   await readModelStream(owner, '/api/model/complete-stream', messages, (event, payload) => {
     if (event === 'delta') {
       if (typeof payload.text !== 'string') throw new Error('Invalid model stream');
       contentSize += payload.text.length;
       if (contentSize > 16000) throw new Error('Model answer exceeded limit');
-      sendEvent(stream, 'delta', { text: payload.text });
+      gate.push(payload.text);
     }
-    if (event === 'reset') sendEvent(stream, 'reset', {});
+    if (event === 'reset') gate.reset();
     if (event === 'turn') turn = payload;
   });
   if (!turn || typeof turn.content !== 'string' || !Array.isArray(turn.tool_calls)) throw new Error('Invalid model turn');
-  return turn;
+  return { turn, clean: gate.finish() };
 }
 
-async function streamFinalAnswer(owner: string, messages: any[], stream: PassThrough): Promise<string> {
+async function streamFinalAnswer(owner: string, messages: any[], stream: PassThrough): Promise<string | null> {
   let answer = '';
+  const gate = textGate(stream);
   await readModelStream(owner, '/api/model/stream', messages, (event, payload) => {
     if (event === 'delta') {
       if (typeof payload.text !== 'string') throw new Error('Invalid model stream');
       answer += payload.text;
       if (answer.length > 16000) throw new Error('Model answer exceeded limit');
-      sendEvent(stream, 'delta', { text: payload.text });
+      gate.push(payload.text);
     }
   });
   if (!answer.trim()) throw new Error('Empty model answer');
-  return answer;
+  return gate.finish() ? answer : null;
 }
 
 async function chatWithTools(context: any, owner: string, admin: boolean, sessionId: string, content: string, retry: boolean, stream: PassThrough) {
@@ -202,50 +248,72 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
     const prepared = await proxyJson('POST', `/api/sessions/${sessionId}/turn`, owner, { content, retry });
     if (prepared.status !== 200 || !Array.isArray(prepared.data.messages)) throw new Error('Could not prepare chat');
     const messages: any[] = prepared.data.messages;
-    stage = 'model';
-    const turn = await streamModelTurn(owner, messages, stream);
-    if (!turn.tool_calls.length) {
-      if (!turn.content.trim() || turn.content.length > 16000) throw new Error('Empty or oversized model answer');
-      stage = 'save';
-      const saved = await proxyJson('POST', `/api/sessions/${sessionId}/assistant`, owner, { content: turn.content });
-      if (saved.status !== 200) throw new Error('Could not save answer');
-      sendEvent(stream, 'done', { message: turn.content });
-      stream.end();
-      return;
-    }
-    if (turn.tool_calls.length > 4) throw new Error('Tool call limit reached');
-    messages.push({ role: 'assistant', content: turn.content, tool_calls: turn.tool_calls });
-    stage = 'tools';
-    for (const call of turn.tool_calls) {
-      const name = call?.function?.name;
-      const id = call?.id;
-      if (typeof name !== 'string' || !allowed.has(name) || typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
-        throw new Error('Unsupported model tool call');
+    const observations: ToolObservation[] = [];
+    let callsUsed = 0;
+    let answer: string | null = null;
+    for (let round = 0; round < 2; round++) {
+      stage = 'model';
+      const { turn, clean } = await streamModelTurn(owner, messages, stream);
+      if (!turn.tool_calls.length) {
+        answer = clean && turn.content.trim() ? turn.content : groundedFallback(observations, clean ? 'empty' : 'tool_markup');
+        if (!clean || !turn.content.trim()) sendEvent(stream, 'delta', { text: answer });
+        break;
       }
-      const started = Date.now();
-      let status: 'ok' | 'denied' | 'error' = 'ok';
-      let argumentsForAudit: Record<string, unknown> = {};
-      let count = 0;
-      let result: any;
+      messages.push({ role: 'assistant', content: turn.content, tool_calls: turn.tool_calls });
+      stage = 'tools';
+      for (const call of turn.tool_calls) {
+        const name = call?.function?.name;
+        const id = call?.id;
+        if (typeof name !== 'string' || !allowed.has(name) || typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+          throw new Error('Unsupported model tool call');
+        }
+        const started = Date.now();
+        let status: 'ok' | 'denied' | 'error' = 'ok';
+        let argumentsForAudit: Record<string, unknown> = {};
+        let count = 0;
+        let result: any;
+        if (callsUsed >= 8) {
+          status = 'error';
+          result = { error: 'Read-tool budget reached for this question' };
+        } else {
+          callsUsed++;
+          try {
+            const executed = await executeReadTool(context, name, call.function.arguments, admin, managerRead);
+            argumentsForAudit = executed.arguments;
+            count = executed.count;
+            result = executed.data;
+            if (JSON.stringify(result).length > 12000) throw new Error('Tool result exceeded limit');
+          } catch (error) {
+            status = (error as any)?.statusCode === 401 || (error as any)?.statusCode === 403 ? 'denied' : 'error';
+            result = { error: status === 'denied' ? 'Source permission denied' : 'Tool unavailable or invalid arguments' };
+          }
+        }
+        const audit = await proxyJson('POST', `/api/sessions/${sessionId}/tool-audit`, owner, {
+          name, arguments: argumentsForAudit, status, count, duration_ms: Math.min(180000, Date.now() - started),
+        });
+        if (audit.status !== 200) throw new Error('Tool audit unavailable');
+        sendEvent(stream, 'tool', { name, status, count });
+        const refs = Array.isArray(result?.records) ? result.records.slice(0, 3).map((item: any) => String(item.source_ref || '').slice(0, 256)) : [];
+        observations.push({ name, args: argumentsForAudit, count, status, refs });
+        messages.push({ role: 'tool', tool_call_id: id, name, content: JSON.stringify(result) });
+      }
+    }
+    if (answer === null) {
+      stage = 'stream';
+      messages.push({ role: 'system', content: 'Final answer only. No further tools are available. Do not print tool-call syntax, XML function tags, or planned searches. Describe only searches that actually ran and state the limits of negative results.' });
       try {
-        const executed = await executeReadTool(context, name, call.function.arguments, admin, managerRead);
-        argumentsForAudit = executed.arguments;
-        count = executed.count;
-        result = executed.data;
-        if (JSON.stringify(result).length > 12000) throw new Error('Tool result exceeded limit');
+        answer = await streamFinalAnswer(owner, messages, stream);
       } catch (error) {
-        status = (error as any)?.statusCode === 401 || (error as any)?.statusCode === 403 ? 'denied' : 'error';
-        result = { error: status === 'denied' ? 'Source permission denied' : 'Tool unavailable or invalid arguments' };
+        console.warn('[wazuh-local-ai] final model answer unavailable', { reason: error instanceof Error ? error.message : 'unknown' });
+        sendEvent(stream, 'reset', {});
+        answer = groundedFallback(observations, 'model_unavailable');
+        sendEvent(stream, 'delta', { text: answer });
       }
-      const audit = await proxyJson('POST', `/api/sessions/${sessionId}/tool-audit`, owner, {
-        name, arguments: argumentsForAudit, status, count, duration_ms: Math.min(180000, Date.now() - started),
-      });
-      if (audit.status !== 200) throw new Error('Tool audit unavailable');
-      sendEvent(stream, 'tool', { name, status, count });
-      messages.push({ role: 'tool', tool_call_id: id, name, content: JSON.stringify(result) });
+      if (answer === null) {
+        answer = groundedFallback(observations);
+        sendEvent(stream, 'delta', { text: answer });
+      }
     }
-    stage = 'stream';
-    const answer = await streamFinalAnswer(owner, messages, stream);
     stage = 'save';
     const saved = await proxyJson('POST', `/api/sessions/${sessionId}/assistant`, owner, { content: answer });
     if (saved.status !== 200) throw new Error('Could not save answer');
@@ -370,7 +438,8 @@ export class LocalAiServerPlugin implements Plugin {
         const stream = new PassThrough();
         void chatWithTools(context, identity.owner, adminAllowed(identity), request.params.id, request.body.content, request.body.retry === true, stream);
         return response.custom({ statusCode: 200, headers: {
-          'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store',
+          'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform',
+          'Content-Encoding': 'identity',
           'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff',
         }, body: stream });
       } catch { return response.customError({ statusCode: 503, body: { message: 'Assistant unavailable' } }); }

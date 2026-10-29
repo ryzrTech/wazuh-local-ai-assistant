@@ -17,6 +17,8 @@ async function main() {
   let audited = false;
   let saved = false;
   let savedConcept = false;
+  let savedMalware = '';
+  const malwareSearches = [];
   let toolResultSeen = false;
   const backend = http.createServer(async (request, response) => {
     const chunks = [];
@@ -26,6 +28,18 @@ async function main() {
     if (request.url.endsWith('/turn')) result = { messages: [{ role: 'system', content: 'Use read tools' }, { role: 'user', content: payload.content }] };
     else if (request.url === '/api/model/complete-stream') {
       modelCalls++;
+      if (payload.messages.some((item) => item.role === 'user' && item.content === 'Malware probe')) {
+        const searchedOnce = payload.messages.some((item) => item.role === 'tool');
+        const terms = searchedOnce ? ['ransomware', 'trojan', 'virus', 'malicious'] : ['malware'];
+        const tool_calls = terms.map((term, index) => ({ id: `malware_${index}`, type: 'function', function: {
+          name: 'search_alerts', arguments: JSON.stringify({ hours: 168, text: term }),
+        } }));
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.write('event: reset\ndata: {}\n\n');
+        response.write(`event: turn\ndata: ${JSON.stringify({ content: '', tool_calls })}\n\n`);
+        response.end('event: done\ndata: {}\n\n');
+        return;
+      }
       if (payload.messages.some((item) => item.role === 'user' && item.content === 'Explain concept')) {
         response.writeHead(200, { 'Content-Type': 'text/event-stream' });
         response.write('event: delta\ndata: {"text":"Concept "}\n\n');
@@ -41,13 +55,21 @@ async function main() {
       response.end('event: done\ndata: {}\n\n');
       return;
     } else if (request.url === '/api/model/stream') {
+      if (payload.messages.some((item) => item.role === 'user' && item.content === 'Malware probe')) {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.write('event: delta\ndata: {"text":"I will broaden the search. "}\n\n');
+        response.write('event: delta\ndata: {"text":"<tool_"}\n\n');
+        response.write('event: delta\ndata: {"text":"call><function=search_alerts>"}\n\n');
+        response.end('event: done\ndata: {}\n\n');
+        return;
+      }
       toolResultSeen = payload.messages.some((item) => item.role === 'tool' && item.content.includes('wazuh-alerts-example/abc'));
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
       response.write('event: delta\ndata: {"text":"One alert found "}\n\n');
       setTimeout(() => { response.write('event: delta\ndata: {"text":"[wazuh-alerts-example/abc]."}\n\n'); response.end('event: done\ndata: {}\n\n'); }, 10);
       return;
     } else if (request.url.endsWith('/tool-audit')) { audited = payload.name === 'search_alerts' && payload.count === 1; result = { saved: true }; }
-    else if (request.url.endsWith('/assistant')) { saved ||= payload.content.includes('One alert found'); savedConcept ||= payload.content === 'Concept explained.'; result = { saved: true }; }
+    else if (request.url.endsWith('/assistant')) { saved ||= payload.content.includes('One alert found'); savedConcept ||= payload.content === 'Concept explained.'; if (payload.content.includes('Completed Wazuh searches')) savedMalware = payload.content; result = { saved: true }; }
     else { response.writeHead(404); response.end('{}'); return; }
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(result));
@@ -64,6 +86,10 @@ async function main() {
       if (query.path === '/_plugins/_security/authinfo') return { body: { user_name: 'test-user', roles: ['all_access'] } };
       if (query.path === '/wazuh-alerts-*/_search') {
         searched = query.body.size === 10;
+        if (query.body.query.bool.must.length) {
+          malwareSearches.push(query.body.query.bool.must[0].multi_match.query);
+          return { body: { hits: { hits: [] } } };
+        }
         return { body: { hits: { hits: [{ _index: 'wazuh-alerts-example', _id: 'abc',
           _source: { timestamp: '2026-01-01T00:00:00Z', rule: { id: '100100', level: 12 } } }] } } };
       }
@@ -72,6 +98,7 @@ async function main() {
     const response = { custom: (value) => value, badRequest: () => ({ statusCode: 400 }), unauthorized: () => ({ statusCode: 401 }), customError: (value) => value };
     const result = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Show alerts' } }, response);
     assert.equal(result.statusCode, 200);
+    assert.equal(result.headers['Content-Encoding'], 'identity');
     const output = [];
     for await (const chunk of result.body) output.push(chunk.toString());
     const stream = output.join('');
@@ -79,8 +106,8 @@ async function main() {
     assert.match(stream, /event: reset/);
     assert.match(stream, /event: done/);
     assert.match(stream, /One alert found/);
-    assert.equal((stream.match(/event: delta/g) || []).length, 3);
-    assert.equal(modelCalls, 1);
+    assert.equal((stream.match(/event: delta/g) || []).length, 2);
+    assert.equal(modelCalls, 2);
     assert.equal(searched && audited && saved && toolResultSeen, true);
     const concept = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Explain concept' } }, response);
     const conceptOutput = [];
@@ -90,6 +117,15 @@ async function main() {
     assert.doesNotMatch(conceptStream, /event: reset/);
     assert.match(conceptStream, /event: done/);
     assert.equal(savedConcept, true);
+    const malware = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Malware probe' } }, response);
+    const malwareOutput = [];
+    for await (const chunk of malware.body) malwareOutput.push(chunk.toString());
+    const malwareStream = malwareOutput.join('');
+    assert.deepEqual(malwareSearches, ['malware', 'ransomware', 'trojan', 'virus', 'malicious']);
+    assert.match(malwareStream, /event: reset/);
+    assert.doesNotMatch(malwareStream, /<tool_call>|<function=/);
+    assert.match(savedMalware, /Completed Wazuh searches/);
+    assert.doesNotMatch(savedMalware, /<tool_call>|<function=/);
     process.stdout.write('chat broker tool round-trip, audit, and persistence: ok\n');
   } finally {
     backend.close();
