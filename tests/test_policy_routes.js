@@ -6,7 +6,7 @@ process.env.ASSISTANT_POLICY_TOKEN = 'v'.repeat(32);
 process.env.ASSISTANT_POLICY_APPLY_TOKEN = 'a'.repeat(32);
 const originalLoad = Module._load;
 Module._load = function (name, parent, isMain) {
-  if (name === '@osd/config-schema') return { schema: { object: () => ({}), string: () => ({}), number: () => ({}), maybe: () => ({}) } };
+  if (name === '@osd/config-schema') return { schema: { object: () => ({}), string: () => ({}), number: () => ({}), boolean: () => ({}), maybe: () => ({}) } };
   return originalLoad(name, parent, isMain);
 };
 const { plugin } = require('../dashboard-plugin/native/server/index.js');

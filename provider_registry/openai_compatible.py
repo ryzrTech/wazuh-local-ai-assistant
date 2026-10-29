@@ -101,11 +101,17 @@ class Provider:
         finally:
             conn.close()
 
-    def stream(self, messages):
+    def stream(self, messages, tools=None):
         if not self.model:
             raise ProviderError("No model selected")
         parsed, conn = self._connection()
-        body = json.dumps({"model": self.model, "messages": messages, "stream": True, "temperature": 0.2, "max_tokens": 1024}).encode()
+        request = {"model": self.model, "messages": messages, "stream": True,
+                   "temperature": 0.2, "max_tokens": 1536 if tools is not None else 1024}
+        if tools is not None:
+            request.update({"tools": tools, "tool_choice": "none"})
+        body = json.dumps(request).encode()
+        if len(body) > 65536:
+            raise ProviderError("Model request exceeded size limit")
         try:
             conn.request("POST", parsed.path.rstrip("/") + "/chat/completions", body=body, headers=self._headers())
             response = conn.getresponse()
@@ -129,9 +135,12 @@ class Provider:
                     return
                 try:
                     chunk = json.loads(data)
-                    text = chunk["choices"][0]["delta"].get("content")
+                    delta = chunk["choices"][0]["delta"]
                 except (ValueError, KeyError, IndexError, TypeError):
                     continue
+                if delta.get("tool_calls"):
+                    raise ProviderError("Provider requested tools during final answer")
+                text = delta.get("content")
                 if isinstance(text, str):
                     yield text
             raise ProviderError("Provider stream ended without completion marker")
@@ -140,7 +149,7 @@ class Provider:
         finally:
             conn.close()
 
-    def complete_with_tools(self, messages, tools):
+    def complete_with_tools(self, messages, tools, on_content=None, on_tools=None):
         """Collect one bounded streamed assistant turn, including function calls."""
         if not self.model:
             raise ProviderError("No model selected")
@@ -152,6 +161,7 @@ class Provider:
         if len(body) > 65536:
             raise ProviderError("Model request exceeded size limit")
         content, calls, total, done = [], {}, 0, False
+        saw_tools = False
         try:
             conn.request("POST", parsed.path.rstrip("/") + "/chat/completions", body=body, headers=self._headers())
             response = conn.getresponse()
@@ -182,6 +192,12 @@ class Provider:
                     content.append(text)
                     if sum(map(len, content)) > 16000:
                         raise ProviderError("Answer exceeded size limit")
+                    if on_content is not None and not saw_tools:
+                        on_content(text)
+                if delta.get("tool_calls") and not saw_tools:
+                    saw_tools = True
+                    if on_tools is not None:
+                        on_tools()
                 for item in delta.get("tool_calls") or []:
                     if not isinstance(item, dict) or type(item.get("index")) is not int:
                         raise ProviderError("Malformed model tool call")

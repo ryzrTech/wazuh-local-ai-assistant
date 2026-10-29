@@ -34,9 +34,14 @@ class FakeProvider(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         if request.get("tools"):
-            if any(message.get("role") == "tool" for message in request["messages"]):
+            if any(message.get("content") == "Just explain" for message in request["messages"]):
+                self.wfile.write(b'data: {"choices":[{"delta":{"content":"This "}}]}\n\n')
+                self.wfile.flush()
+                self.wfile.write(b'data: {"choices":[{"delta":{"content":"is text."}}]}\n\n')
+            elif any(message.get("role") == "tool" for message in request["messages"]):
                 self.wfile.write(b'data: {"choices":[{"delta":{"content":"Found one matching alert."}}]}\n\n')
             else:
+                self.wfile.write(b'data: {"choices":[{"delta":{"content":"Checking now."}}]}\n\n')
                 self.wfile.write(b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search_alerts","arguments":"{\\\"hours\\\":24"}}]}}]}\n\n')
                 self.wfile.write(b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\\\"rule_id\\\":\\\"100100\\\"}"}}]}}]}\n\n')
             self.wfile.write(b'data: [DONE]\n\n')
@@ -108,6 +113,54 @@ class Milestone2Tests(unittest.TestCase):
         status, payload = self.request("GET", f"/api/sessions/{sid}/messages")
         self.assertEqual(status, 200)
         self.assertEqual([m["content"] for m in json.loads(payload)["messages"]], ["Hello", "Hello world"])
+
+    def test_tool_answer_stream_and_retry_without_duplicate(self):
+        sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]
+        path = f"/api/sessions/{sid}/turn"
+        status, payload = self.request("POST", path, {"content": "Any malware detections?", "retry": False})
+        self.assertEqual(status, 200)
+        self.assertEqual([item["role"] for item in json.loads(payload)["messages"]], ["system", "user"])
+        status, payload = self.request("POST", path, {"content": "Any malware detections?", "retry": True})
+        self.assertEqual(status, 200)
+        self.assertEqual([item["role"] for item in json.loads(payload)["messages"]], ["system", "user"])
+        self.assertEqual(self.request("POST", path, {"content": "Different question", "retry": True})[0], 409)
+        status, payload = self.request("GET", f"/api/sessions/{sid}/messages")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["content"] for item in json.loads(payload)["messages"]], ["Any malware detections?"])
+        self.server.store.append("analyst", sid, "user", "Any malware detections?")
+        status, payload = self.request("POST", path, {"content": "Any malware detections?", "retry": True})
+        self.assertEqual(status, 200)
+        self.assertEqual([item["role"] for item in json.loads(payload)["messages"]], ["system", "user"])
+
+        messages = [
+            {"role": "system", "content": "Answer using the search result."},
+            {"role": "user", "content": "Any malware detections?"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "search_alerts", "arguments": "{\"hours\":24}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "search_alerts", "content": '{"records":[]}'},
+        ]
+        status, stream = self.request("POST", "/api/model/stream", {"messages": messages})
+        self.assertEqual(status, 200)
+        self.assertIn(b'event: delta', stream)
+        self.assertIn(b'event: done', stream)
+        self.assertEqual(FakeProvider.last_request["tool_choice"], "none")
+
+    def test_first_model_turn_streams_and_resets_before_tools(self):
+        messages = [{"role": "system", "content": "Use tools when needed"},
+                    {"role": "user", "content": "Check alerts"}]
+        status, stream = self.request("POST", "/api/model/complete-stream", {"messages": messages})
+        self.assertEqual(status, 200)
+        self.assertIn(b'event: delta', stream)
+        self.assertIn(b'event: reset', stream)
+        self.assertIn(b'event: turn', stream)
+        self.assertIn(b'event: done', stream)
+
+        status, stream = self.request("POST", "/api/model/complete-stream", {"messages": [
+            {"role": "system", "content": "Explain"}, {"role": "user", "content": "Just explain"}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(stream.count(b'event: delta'), 2)
+        self.assertNotIn(b'event: reset', stream)
+        self.assertIn(b'event: done', stream)
 
     def test_cross_user_and_auth_denied(self):
         sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]

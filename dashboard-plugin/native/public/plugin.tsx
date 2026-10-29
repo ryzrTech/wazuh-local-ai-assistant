@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { EuiButton, EuiButtonEmpty, EuiButtonIcon, EuiLoadingSpinner, EuiTextArea } from '@elastic/eui';
 import { CoreSetup, CoreStart, Plugin } from 'opensearch_dashboards/public';
@@ -18,6 +18,7 @@ function Assistant({ core }: { core: CoreStart }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const transcriptRef = useRef<HTMLDivElement>(null);
   const [model, setModel] = useState('Checking…');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -63,11 +64,18 @@ function Assistant({ core }: { core: CoreStart }) {
   }
 
   async function selectSession(id: string) {
-    if (!id) { setSessionId(''); setMessages([]); return; }
+    if (!id) { setSessionId(''); setMessages([]); return [] as ChatMessage[]; }
     const data = await api(`/sessions/${id}/messages`);
     setSessionId(id);
     setMessages(data.messages.map((item: ChatMessage) => ({ role: item.role, content: item.content })));
+    return data.messages as ChatMessage[];
   }
+
+  useLayoutEffect(() => {
+    if (open && !settingsOpen && transcriptRef.current) {
+      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    }
+  }, [messages, busy, open, settingsOpen]);
 
   async function createSession() {
     const data = await api('/sessions', { method: 'POST', body: '{}' });
@@ -197,6 +205,9 @@ function Assistant({ core }: { core: CoreStart }) {
   async function send() {
     const content = prompt.trim();
     if (!content || busy) return;
+    const previousMessageCount = messages.length;
+    const lastMessage = messages[messages.length - 1];
+    const retry = lastMessage?.role === 'user' && lastMessage.content === content;
     setBusy(true); setError(''); setPrompt('');
     let id = sessionId;
     try {
@@ -205,7 +216,7 @@ function Assistant({ core }: { core: CoreStart }) {
       const result = await fetch(endpoint(`/sessions/${id}/messages`), {
         method: 'POST', credentials: 'same-origin', cache: 'no-store',
         headers: { 'osd-xsrf': 'wazuh-local-ai', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, retry }),
       });
       if (!result.ok || !result.body) throw new Error(`Message failed (${result.status})`);
       const reader = result.body.getReader();
@@ -229,6 +240,12 @@ function Assistant({ core }: { core: CoreStart }) {
             copy[copy.length - 1] = { ...last, content: last.content + payload.text };
             return copy;
           });
+          if (event === 'reset') setMessages((current) => {
+            const copy = [...current];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, content: '' };
+            return copy;
+          });
           if (event === 'done') completed = true;
           if (event === 'tool') setMessages((current) => {
             const copy = [...current];
@@ -243,8 +260,11 @@ function Assistant({ core }: { core: CoreStart }) {
       await refreshSessions();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Assistant unavailable.');
-      setPrompt(content);
-      if (id) await selectSession(id).catch(() => undefined);
+      try {
+        const savedMessages = id ? await selectSession(id) : [];
+        const saved = retry || savedMessages.length > previousMessageCount;
+        if (!saved) setPrompt(content);
+      } catch { setPrompt(content); }
     } finally { setBusy(false); }
   }
 
@@ -361,7 +381,7 @@ function Assistant({ core }: { core: CoreStart }) {
           <EuiButtonEmpty className="wlaNew" size="s" iconType="plus" onClick={() => createSession().catch(() => setError('Could not start a conversation.'))}>New</EuiButtonEmpty>
         </div>
         <div className="wlaContext"><span>Security Analyst</span><span className="wlaContextDot" aria-hidden="true" /><span>{model}</span></div>
-        <div className="wlaTranscript" role="log" aria-live="polite">
+        <div className="wlaTranscript" role="log" aria-live="polite" ref={transcriptRef}>
           {messages.length === 0 ? <div className="wlaEmpty">
             <span className="wlaEmptyMark" aria-hidden="true">✦</span>
             <h3>How can I help?</h3>
@@ -381,7 +401,13 @@ function Assistant({ core }: { core: CoreStart }) {
             <label className="wlaVisuallyHidden" htmlFor="wla-prompt">Message</label>
             <EuiTextArea id="wla-prompt" rows={3} placeholder="Ask a question…" value={prompt} maxLength={4000}
               onChange={(event) => setPrompt(event.target.value)}
-              onKeyDown={(event) => { if (enterToSend && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }} />
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowUp' && !prompt && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+                  const previous = [...messages].reverse().find((item) => item.role === 'user');
+                  if (previous) { event.preventDefault(); setPrompt(previous.content); }
+                }
+                if (enterToSend && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
+              }} />
             <div className="wlaComposerActions">
               <span>{enterToSend ? 'Enter to send · Shift+Enter for a new line' : 'Use Send to submit'}</span>
               <EuiButton className="wlaSend" size="s" fill onClick={send} isLoading={busy}>Send</EuiButton>
