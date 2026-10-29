@@ -45,6 +45,7 @@ TOOL_SYSTEM_PROMPT = (
     "Syscollector software, process, and port records are scan snapshots, not live endpoint state. "
     "For a port-related alert, check get_ports and get_processes before suggesting a cause; if those "
     "snapshots do not identify an owner, say that the cause remains unconfirmed. "
+    "A port number, including 55555, or a rootcheck alert alone does not prove a backdoor, C2 traffic, or compromise. "
     "Use get_wazuh_data for agent discovery, rootcheck, file integrity, service and network inventory, "
     "SCA checks, effective agent configuration, rules, decoders, group membership, manager status, and "
     "active-response configuration when those sources are relevant. "
@@ -611,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
             size = 0
             try:
                 for text in self.server.provider.current().stream(
-                    messages, READ_TOOLS, on_reasoning=lambda text: self._event("thinking", {"text": text})
+                    messages, on_reasoning=lambda text: self._event("thinking", {"text": text})
                 ):
                     size += len(text)
                     if size > 16000:

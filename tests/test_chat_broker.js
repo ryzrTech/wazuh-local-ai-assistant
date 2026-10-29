@@ -20,6 +20,8 @@ async function main() {
   let savedConcept = false;
   let savedConceptThinking = false;
   let savedMalware = '';
+  let savedXml = '';
+  let savedMalformed = '';
   const malwareSearches = [];
   let toolResultSeen = false;
   const backend = http.createServer(async (request, response) => {
@@ -30,6 +32,25 @@ async function main() {
     if (request.url.endsWith('/turn')) result = { messages: [{ role: 'system', content: 'Use read tools' }, { role: 'user', content: payload.content }] };
     else if (request.url === '/api/model/complete-stream') {
       modelCalls++;
+      const textProbe = payload.messages.find((item) => item.role === 'user' && ['Malformed probe', 'Text write probe'].includes(item.content))?.content;
+      if (textProbe) {
+        const content = textProbe === 'Malformed probe' ? 'Checking <tool_call><function=search_alerts>' :
+          '<tool_call><function=propose_wazuh_action></function></tool_call>';
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.write(`event: delta\ndata: ${JSON.stringify({ text: content })}\n\n`);
+        response.write(`event: turn\ndata: ${JSON.stringify({ content, tool_calls: [] })}\n\n`);
+        response.end('event: done\ndata: {}\n\n'); return;
+      }
+      if (payload.messages.some((item) => item.role === 'user' && item.content === 'XML probe')) {
+        const prior = payload.messages.filter((item) => item.role === 'tool').length;
+        const content = prior ? 'One alert found after the recovered call.' :
+          'I will check alerts. <tool_call> <function=search_alerts> <parameter=hours> 24 </parameter> </function> </tool_call>';
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.write(`event: delta\ndata: ${JSON.stringify({ text: content.slice(0, 24) })}\n\n`);
+        response.write(`event: delta\ndata: ${JSON.stringify({ text: content.slice(24) })}\n\n`);
+        response.write(`event: turn\ndata: ${JSON.stringify({ content, tool_calls: [] })}\n\n`);
+        response.end('event: done\ndata: {}\n\n'); return;
+      }
       if (payload.messages.some((item) => item.role === 'user' && item.content === 'Malware probe')) {
         const prior = payload.messages.filter((item) => item.role === 'tool').length;
         const terms = prior >= 5 ? [] : prior ? ['ransomware', 'trojan', 'virus', 'malicious'] : ['malware'];
@@ -59,6 +80,11 @@ async function main() {
       response.end('event: done\ndata: {}\n\n');
       return;
     } else if (request.url === '/api/model/stream') {
+      if (payload.messages.some((item) => item.role === 'user' && ['Malformed probe', 'Text write probe'].includes(item.content))) {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.write('event: delta\ndata: {"text":"I could not finish the investigation. Please retry."}\n\n');
+        response.end('event: done\ndata: {}\n\n'); return;
+      }
       if (payload.messages.some((item) => item.role === 'user' && item.content === 'Malware probe')) {
         response.writeHead(200, { 'Content-Type': 'text/event-stream' });
         response.write('event: delta\ndata: {"text":"I will broaden the search. "}\n\n');
@@ -73,7 +99,7 @@ async function main() {
       setTimeout(() => { response.write('event: delta\ndata: {"text":"[wazuh-alerts-example/abc]."}\n\n'); response.end('event: done\ndata: {}\n\n'); }, 10);
       return;
     } else if (request.url.endsWith('/tool-audit')) { audited = payload.name === 'search_alerts' && payload.count === 1; result = { saved: true }; }
-    else if (request.url.endsWith('/assistant')) { if (payload.content.includes('One alert found')) assert.equal(payload.updates, 'Searching…'); saved ||= payload.content.includes('One alert found'); savedUpdates ||= payload.content.includes('One alert found') && payload.updates === 'Searching…'; savedConcept ||= payload.content === 'Concept explained.'; savedConceptThinking ||= payload.content === 'Concept explained.' && payload.thinking === 'Check the concept first. Then explain.'; if (payload.content.includes('Completed Wazuh searches')) savedMalware = payload.content; result = { saved: true }; }
+    else if (request.url.endsWith('/assistant')) { if (payload.content.includes('One alert found') && !payload.content.includes('recovered call')) assert.equal(payload.updates, 'Searching…'); saved ||= payload.content.includes('One alert found'); savedUpdates ||= payload.content.includes('One alert found') && payload.updates === 'Searching…'; savedConcept ||= payload.content === 'Concept explained.'; savedConceptThinking ||= payload.content === 'Concept explained.' && payload.thinking === 'Check the concept first. Then explain.'; if (payload.content.includes('Completed Wazuh tool calls')) savedMalware = payload.content; if (payload.content.includes('recovered call')) { assert.equal(payload.updates, 'I will check alerts.'); savedXml = payload.content; } if (payload.content.includes('could not finish')) savedMalformed = payload.content; result = { saved: true }; }
     else { response.writeHead(404); response.end('{}'); return; }
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(result));
@@ -131,8 +157,25 @@ async function main() {
     assert.deepEqual(malwareSearches, ['malware', 'ransomware', 'trojan', 'virus', 'malicious']);
     assert.match(malwareStream, /event: reset/);
     assert.doesNotMatch(malwareStream, /<tool_call>|<function=/);
-    assert.match(savedMalware, /Completed Wazuh searches/);
+    assert.match(savedMalware, /Completed Wazuh tool calls/);
     assert.doesNotMatch(savedMalware, /<tool_call>|<function=/);
+    const xml = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'XML probe' } }, response);
+    const xmlOutput = [];
+    for await (const chunk of xml.body) xmlOutput.push(chunk.toString());
+    const xmlStream = xmlOutput.join('');
+    assert.match(xmlStream, /event: tool\ndata: \{"name":"search_alerts","status":"ok","count":1\}/);
+    assert.match(xmlStream, /recovered call/);
+    assert.doesNotMatch(xmlStream, /<tool_call>|<function=/);
+    assert.equal(savedXml, 'One alert found after the recovered call.');
+    const malformed = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Malformed probe' } }, response);
+    const malformedOutput = [];
+    for await (const chunk of malformed.body) malformedOutput.push(chunk.toString());
+    assert.doesNotMatch(malformedOutput.join(''), /<tool_call>|<function=/);
+    assert.equal(savedMalformed, 'I could not finish the investigation. Please retry.');
+    const denied = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Text write probe' } }, response);
+    const deniedOutput = [];
+    for await (const chunk of denied.body) deniedOutput.push(chunk.toString());
+    assert.doesNotMatch(deniedOutput.join(''), /event: tool|<tool_call>|<function=/);
     process.stdout.write('chat broker tool round-trip, audit, and persistence: ok\n');
   } finally {
     backend.close();

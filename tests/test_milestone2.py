@@ -168,7 +168,8 @@ class Milestone2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b'event: delta', stream)
         self.assertIn(b'event: done', stream)
-        self.assertEqual(FakeProvider.last_request["tool_choice"], "none")
+        self.assertNotIn("tools", FakeProvider.last_request)
+        self.assertNotIn("tool_choice", FakeProvider.last_request)
 
     def test_first_model_turn_streams_and_resets_before_tools(self):
         messages = [{"role": "system", "content": "Use tools when needed"},

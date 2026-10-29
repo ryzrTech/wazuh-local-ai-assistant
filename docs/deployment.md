@@ -47,7 +47,7 @@ Text emitted before a tool call stays visible as an **Investigation updates** no
 
 Chat responses stream into the panel as model text arrives. The transcript stays at the newest message during a turn. With an empty composer, Up Arrow recalls the last question from the active conversation. If a model request fails after saving the question, sending that same question again resumes the unanswered turn without storing a duplicate user message. The model can make four bounded tool rounds, with at most eight actual tool calls, before a final answer; searches stay under the signed-in user's Wazuh permissions.
 
-Dashboard serves assistant SSE with identity encoding to prevent HTTP compression from buffering incremental text. The broker rejects model-generated tool-call markup in prose; it records and reports only tool requests that were actually executed.
+Dashboard serves assistant SSE with identity encoding to prevent HTTP compression from buffering incremental text. The broker can recover complete trailing XML-style read-tool calls from models that emit them as text, but still applies the normal allowlist, argument checks, and signed-in user's permissions. Malformed or unauthorized text calls do not execute. The final-answer request omits tool definitions; if it still emits tool syntax, the broker hides it and reports only calls that actually ran.
 
 ## Validate and apply agent and SCA proposals
 

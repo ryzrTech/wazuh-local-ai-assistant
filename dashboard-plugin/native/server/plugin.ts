@@ -175,21 +175,55 @@ function textGate(stream: PassThrough) {
 
 type ToolObservation = { name: string; args: Record<string, unknown>; count: number; status: string; refs: string[] };
 
+// Some OpenAI-compatible local models emit their function requests as text after
+// earlier native tool calls. Recover only complete, trailing read-only requests;
+// the normal tool dispatcher still validates every argument and permission.
+function textToolCalls(content: string): { preamble: string; calls: any[] } | null {
+  if (content.length > 16000 || content.includes('```')) return null;
+  const first = content.indexOf('<tool_call>');
+  if (first < 0) return null;
+  const preamble = content.slice(0, first).trim();
+  const block = /<tool_call>\s*<function=([a-z_]+)>([\s\S]*?)<\/function>\s*<\/tool_call>\s*/gy;
+  const parameter = /\s*<parameter=([a-z_]+)>([\s\S]*?)<\/parameter>\s*/gy;
+  const readOnly = new Set(['get_capabilities', 'search_alerts', 'search_raw_events', 'get_agent', 'get_sca_results',
+    'get_software_inventory', 'get_processes', 'get_ports', 'get_vulnerabilities', 'get_wazuh_data']);
+  const calls: any[] = [];
+  let position = first;
+  while (position < content.length) {
+    block.lastIndex = position;
+    const match = block.exec(content);
+    if (!match || !readOnly.has(match[1]) || calls.length >= 4) return null;
+    const args: Record<string, string | number> = {};
+    let offset = 0;
+    while (match[2].slice(offset).trim()) {
+      parameter.lastIndex = offset;
+      const field = parameter.exec(match[2]);
+      if (!field || Object.hasOwn(args, field[1])) return null;
+      const value = field[2].trim();
+      if (!value || value.length > 256 || /[<>\x00-\x1f\x7f]/.test(value)) return null;
+      args[field[1]] = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value) ? Number(value) : value;
+      offset = parameter.lastIndex;
+    }
+    calls.push({ id: `text_tool_${calls.length}`, type: 'function', function: { name: match[1], arguments: JSON.stringify(args) } });
+    position = block.lastIndex;
+  }
+  return calls.length ? { preamble, calls } : null;
+}
+
 function groundedFallback(observations: ToolObservation[], reason: 'tool_markup' | 'model_unavailable' | 'empty' = 'tool_markup'): string {
   const proposals = observations.filter((item) => item.status === 'ok' && item.name.startsWith('propose_'));
   if (proposals.length) return 'A proposal was saved, but I could not complete the model answer. Open AI investigations to review the saved proposal before trying again. No action was executed by chat.';
-  const searches = observations.filter((item) => item.name.startsWith('search_'));
-  if (!searches.length) return 'I could not complete the model answer, and no Wazuh search ran. Please retry your question.';
-  const lines = searches.map((item) => {
+  if (!observations.length) return 'I could not complete the model answer, and no Wazuh tool ran. Please retry your question.';
+  const lines = observations.map((item) => {
     const hours = typeof item.args.hours === 'number' ? `, last ${item.args.hours} hours` : '';
     const term = typeof item.args.text === 'string' ? `, text ${JSON.stringify(item.args.text)}` : '';
     const refs = item.refs.length ? ` Sources: ${item.refs.join(', ')}.` : '';
-    const outcome = item.status === 'ok' ? `${item.count} matching record${item.count === 1 ? '' : 's'}` : 'search unavailable';
+    const outcome = item.status === 'ok' ? `${item.count} record${item.count === 1 ? '' : 's'}` : 'unavailable';
     return `- ${item.name}${hours}${term}: ${outcome}.${refs}`;
   });
-  const detail = reason === 'tool_markup' ? 'The searches listed above really ran. The model printed further tool instructions as text; those additional searches did not run.'
-    : reason === 'empty' ? 'The model did not provide a usable final answer.' : 'The model answer became unavailable after these searches.';
-  return `Completed Wazuh searches:\n${lines.join('\n')}\n\nThese results cover only the searches listed above. ${detail} An absence of matches does not rule out detections outside this search scope.`;
+  const detail = reason === 'tool_markup' ? 'The model printed further tool instructions as text; those additional calls did not run.'
+    : reason === 'empty' ? 'The model did not provide a usable final answer.' : 'The model answer became unavailable after these calls.';
+  return `Completed Wazuh tool calls:\n${lines.join('\n')}\n\n${detail} I cannot determine whether these findings are suspicious from counts alone. Please retry for an evidence-based assessment.`;
 }
 
 export async function proposeAgentSca(context: any, owner: string, admin: boolean, raw: string) {
@@ -298,6 +332,14 @@ async function streamModelTurn(owner: string, messages: any[], stream: PassThrou
   });
   if (!turn || typeof turn.content !== 'string' || !Array.isArray(turn.tool_calls)) throw new Error('Invalid model turn');
   const clean = gate.finish();
+  if (!turn.tool_calls.length && !clean) {
+    const recovered = textToolCalls(turn.content);
+    if (recovered) {
+      console.info('[wazuh-local-ai] recovered text tool calls', { names: recovered.calls.map((call) => call.function.name) });
+      if (recovered.preamble) onProgress(recovered.preamble);
+      turn = { content: recovered.preamble, tool_calls: recovered.calls };
+    }
+  }
   if (turn.tool_calls.length) {
     if (clean && provisional.trim()) onProgress(provisional.trim());
     sendEvent(stream, 'reset', {});
@@ -357,8 +399,9 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
       stage = 'model';
       const { turn, clean } = await streamModelTurn(owner, messages, stream, onThinking, onProgress);
       if (!turn.tool_calls.length) {
-        answer = clean && turn.content.trim() ? turn.content : groundedFallback(observations, clean ? 'empty' : 'tool_markup');
-        if (!clean || !turn.content.trim()) sendEvent(stream, 'delta', { text: answer });
+        if (clean && turn.content.trim()) answer = turn.content;
+        // A malformed text tool call gets one tool-free final-answer attempt
+        // using the verified results already in this turn.
         break;
       }
       messages.push({ role: 'assistant', content: turn.content, tool_calls: turn.tool_calls });
@@ -399,7 +442,8 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
         });
         if (audit.status !== 200) throw new Error('Tool audit unavailable');
         sendEvent(stream, 'tool', { name, status, count });
-        const refs = Array.isArray(result?.records) ? result.records.slice(0, 3).map((item: any) => String(item.source_ref || '').slice(0, 256)) : [];
+        const refs = Array.isArray(result?.records) ? result.records.slice(0, 3).map((item: any) => String(item.source_ref || '').slice(0, 256))
+          : result?.source_ref ? [String(result.source_ref).slice(0, 256)] : [];
         observations.push({ name, args: argumentsForAudit, count, status, refs });
         messages.push({ role: 'tool', tool_call_id: id, name, content: JSON.stringify(result) });
       }
