@@ -177,7 +177,7 @@ function groundedFallback(observations: ToolObservation[], reason: 'tool_markup'
     const outcome = item.status === 'ok' ? `${item.count} matching record${item.count === 1 ? '' : 's'}` : 'search unavailable';
     return `- ${item.name}${hours}${term}: ${outcome}.${refs}`;
   });
-  const detail = reason === 'tool_markup' ? 'The model printed additional tool instructions, but those were not executed.'
+  const detail = reason === 'tool_markup' ? 'The searches listed above really ran. The model printed further tool instructions as text; those additional searches did not run.'
     : reason === 'empty' ? 'The model did not provide a usable final answer.' : 'The model answer became unavailable after these searches.';
   return `Completed Wazuh searches:\n${lines.join('\n')}\n\nThese results cover only the searches listed above. ${detail} An absence of matches does not rule out detections outside this search scope.`;
 }
@@ -282,7 +282,7 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
     };
     let callsUsed = 0;
     let answer: string | null = null;
-    for (let round = 0; round < 2; round++) {
+    for (let round = 0; round < 4; round++) {
       stage = 'model';
       const { turn, clean } = await streamModelTurn(owner, messages, stream, onThinking, onProgress);
       if (!turn.tool_calls.length) {
@@ -328,6 +328,7 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
         observations.push({ name, args: argumentsForAudit, count, status, refs });
         messages.push({ role: 'tool', tool_call_id: id, name, content: JSON.stringify(result) });
       }
+      if (callsUsed >= 8) break;
     }
     if (answer === null) {
       stage = 'stream';
@@ -460,7 +461,7 @@ export class LocalAiServerPlugin implements Plugin {
       }));
     router.post({ path: PREFIX + '/sessions/{id}/messages', validate: {
       params: schema.object({ id: schema.string() }),
-      body: schema.object({ content: schema.string({ minLength: 1, maxLength: 4000 }), retry: schema.maybe(schema.boolean()) }),
+      body: schema.object({ content: schema.string({ minLength: 1, maxLength: 16000 }), retry: schema.maybe(schema.boolean()) }),
     } }, async (context: any, request: any, response: any) => {
       if (!SESSION_ID.test(request.params.id) || !request.body.content.trim()) return response.badRequest();
       try {

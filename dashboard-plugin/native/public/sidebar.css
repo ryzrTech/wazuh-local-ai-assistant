@@ -117,13 +117,13 @@
 .wlaMarkdown a { color: var(--wla-accent); }
 .wlaToolTrace { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
 .wlaToolTrace span { padding: 2px 7px; border: 1px solid var(--wla-border); border-radius: 999px; color: var(--wla-accent); background: var(--wla-bg); font-size: 10px; white-space: nowrap; }
-.wlaThinking { margin: 5px 0 10px; border: 1px solid var(--wla-border); border-radius: 8px; background: var(--wla-bg); }
-.wlaThinkingToggle { display: flex; align-items: center; gap: 7px; width: 100%; padding: 7px 10px; border: 0; background: transparent; color: var(--wla-muted); font: inherit; font-size: 11px; font-weight: 650; text-align: left; cursor: pointer; }
+.wlaThinking { margin: 5px 0 10px; color: light-dark(#5b6675, #929baa); }
+.wlaThinkingToggle { display: flex; align-items: center; gap: 7px; width: 100%; padding: 4px 0; border: 0; background: transparent; color: light-dark(#755d8b, #b2a1c7); font: inherit; font-size: 11px; font-weight: 650; text-align: left; cursor: pointer; }
 .wlaThinkingToggle:hover, .wlaThinkingToggle:focus-visible { color: var(--wla-accent); }
 .wlaThinkingChevron { display: inline-block; font-size: 12px; transition: transform .15s ease; }
 .wlaThinkingChevron.isOpen { transform: rotate(90deg); }
-.wlaThinkingPulse { width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--wla-accent); animation: wlaThinkingPulse 1.2s ease-in-out infinite; }
-.wlaThinkingBody { max-height: 260px; overflow: auto; padding: 9px 11px 11px; border-top: 1px solid var(--wla-border); color: var(--wla-muted); font-size: 11px; line-height: 1.5; }
+.wlaThinkingPulse { width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: currentColor; animation: wlaThinkingPulse 1.2s ease-in-out infinite; }
+.wlaThinkingBody { max-height: 260px; overflow: auto; padding: 5px 0 0 18px; color: light-dark(#5b6675, #929baa); font-size: 11px; line-height: 1.5; }
 .wlaProgress { margin: 6px 0 10px; padding: 8px 10px; border-left: 2px solid var(--wla-accent); color: var(--wla-muted); background: var(--wla-bg); font-size: 11px; }
 .wlaProgress > span { display: block; margin-bottom: 4px; color: var(--wla-accent); font-size: 10px; font-weight: 700; }
 @keyframes wlaThinkingPulse { 50% { opacity: .35; } }
@@ -160,6 +160,7 @@
 .wlaComposer .euiTextArea::placeholder { color: var(--wla-muted); opacity: 1; }
 .wlaComposerActions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .wlaComposerActions span { color: var(--wla-muted); font-size: 10px; }
+.wlaComposerActions .wlaOverLimit { color: light-dark(#b42318, #ff8c83); }
 .wlaSend.euiButton { min-width: 62px; height: 29px; font-size: 11px; }
 .wlaScope { margin: 9px 0 0; text-align: center; color: var(--wla-muted); font-size: 10px; }
 

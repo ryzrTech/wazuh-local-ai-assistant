@@ -17,16 +17,16 @@ Browser → authenticated Dashboard plugin → loopback orchestrator → approve
 
 The browser never receives a model key. The orchestrator binds only to loopback. The native plugin registers a Dashboard header control and an AI investigations application, resolves the authenticated indexer user from `/_plugins/_security/authinfo`, and proxies requests with a server-only token. Interactive Wazuh reads run through the current user's indexer and Wazuh Core clients. The isolated preview exercises the sidebar and backend without Wazuh data.
 
-Milestone 3 uses fixed, bounded read queries with the authenticated user's effective privileges and does not treat the orchestrator's service identity as an elevation path. Background jobs will use separate, explicitly scoped service identities. The policy executor is a separate future service with a distinct trust boundary and default Observe mode.
+Milestone 3 uses fixed, bounded read queries with the authenticated user's effective privileges and does not treat the orchestrator's service identity as an elevation path. Background jobs will use separate, explicitly scoped service identities. The policy executor is a separate service with a distinct trust boundary.
 
-The first policy validator is a separate loopback service running under the Wazuh service account with a read-only systemd filesystem and private temporary directory. It accepts only enumerated agent/SCA settings, stages a candidate, and invokes `verify-agent-conf` without a shell. It cannot apply a change. The Dashboard route requires an indexer admin role and confirms that the selected agent belongs to the target group; the future apply service will need its own authorization and stale-file hash check.
+The first policy validator is a separate loopback service running under the Wazuh service account with a read-only systemd filesystem and private temporary directory. It accepts only enumerated agent/SCA settings, stages a candidate, and invokes `verify-agent-conf` without a shell. It cannot apply a change. The Dashboard route requires an indexer admin role and confirms that the selected agent belongs to the target group; the separate apply service requires its own authorization and stale-file hash check.
 
 ## Design decisions
 
 1. Keep vendor-owned Dashboard code untouched. Build an external plugin against the exact OpenSearch Dashboards version and place its compiled output in the Dashboard plugins directory.
 2. Keep model configuration server-side. Provider changes require the indexer administrator role and a separate server-only token. The URL is limited to server-approved hosts, and the key is saved in a private file without being returned to the browser.
 3. Use SQLite for prototype conversation durability. A persistent job queue with bounded retries and dead-letter handling is a later milestone.
-4. Do not enable response actions or rule writes in the chat service. The model currently has no tool interface.
+4. The model has bounded read tools through the authenticated Dashboard broker. Do not enable response actions or rule writes in the chat service.
 5. Fail closed when the configured provider is unavailable; never fall back to an external provider.
 
 ## References pinned for implementation planning

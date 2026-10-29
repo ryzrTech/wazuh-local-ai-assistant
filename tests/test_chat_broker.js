@@ -31,8 +31,8 @@ async function main() {
     else if (request.url === '/api/model/complete-stream') {
       modelCalls++;
       if (payload.messages.some((item) => item.role === 'user' && item.content === 'Malware probe')) {
-        const searchedOnce = payload.messages.some((item) => item.role === 'tool');
-        const terms = searchedOnce ? ['ransomware', 'trojan', 'virus', 'malicious'] : ['malware'];
+        const prior = payload.messages.filter((item) => item.role === 'tool').length;
+        const terms = prior >= 5 ? [] : prior ? ['ransomware', 'trojan', 'virus', 'malicious'] : ['malware'];
         const tool_calls = terms.map((term, index) => ({ id: `malware_${index}`, type: 'function', function: {
           name: 'search_alerts', arguments: JSON.stringify({ hours: 168, text: term }),
         } }));
@@ -112,7 +112,7 @@ async function main() {
     assert.match(stream, /event: done/);
     assert.match(stream, /One alert found/);
     assert.equal((stream.slice(stream.lastIndexOf('event: reset')).match(/event: delta/g) || []).length, 2);
-    assert.equal(modelCalls, 2);
+    assert.equal(modelCalls, 4);
     assert.deepEqual({ searched, audited, saved, savedUpdates, toolResultSeen },
       { searched: true, audited: true, saved: true, savedUpdates: true, toolResultSeen: true });
     const concept = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Explain concept' } }, response);

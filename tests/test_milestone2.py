@@ -33,6 +33,11 @@ class FakeProvider(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
+        if any(message.get("content") == "Too long" for message in request["messages"]):
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"Incomplete"}}]}\n\n')
+            self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n')
+            self.wfile.write(b'data: [DONE]\n\n')
+            return
         if request.get("tools"):
             if any(message.get("content") == "Five searches" for message in request["messages"]):
                 for index in range(5):
@@ -185,6 +190,12 @@ class Milestone2Tests(unittest.TestCase):
         turn = self.adapter.complete_with_tools([{"role": "user", "content": "Five searches"}], READ_TOOLS)
         self.assertEqual(len(turn["tool_calls"]), 5)
 
+    def test_provider_rejects_token_limited_partial_answer(self):
+        with self.assertRaisesRegex(ProviderError, "token limit"):
+            list(self.adapter.stream([{"role": "user", "content": "Too long"}], READ_TOOLS))
+        with self.assertRaisesRegex(ProviderError, "token limit"):
+            self.adapter.complete_with_tools([{"role": "user", "content": "Too long"}], READ_TOOLS)
+
     def test_thinking_stream_and_owner_scoped_history(self):
         messages = [{"role": "user", "content": "Think aloud"}]
         status, stream = self.request("POST", "/api/model/complete-stream", {"messages": messages})
@@ -241,7 +252,13 @@ class Milestone2Tests(unittest.TestCase):
 
     def test_message_bounds(self):
         sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]
-        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/messages", {"content": "x" * 4001})[0], 400)
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/messages", {"content": "x" * 16000})[0], 200)
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/messages", {"content": "x" * 16001})[0], 400)
+        sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]
+        pasted = "A" * 5000
+        status, body = self.request("POST", f"/api/sessions/{sid}/turn", {"content": pasted})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["messages"][-1]["content"], pasted)
 
     def test_admin_provider_configuration(self):
         self.assertEqual(self.request("GET", "/api/provider/config")[0], 403)

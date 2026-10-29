@@ -106,11 +106,11 @@ class Provider:
             raise ProviderError("No model selected")
         parsed, conn = self._connection()
         request = {"model": self.model, "messages": messages, "stream": True,
-                   "temperature": 0.2, "max_tokens": 1536 if tools is not None else 1024}
+                   "temperature": 0.2, "max_tokens": 4096}
         if tools is not None:
             request.update({"tools": tools, "tool_choice": "none"})
         body = json.dumps(request).encode()
-        if len(body) > 65536:
+        if len(body) > 196608:
             raise ProviderError("Model request exceeded size limit")
         try:
             conn.request("POST", parsed.path.rstrip("/") + "/chat/completions", body=body, headers=self._headers())
@@ -122,6 +122,7 @@ class Provider:
                 raise ProviderError("Provider did not return an event stream")
             total = 0
             reasoning_size = 0
+            finish_reason = None
             while True:
                 line = response.readline(65537)
                 if not line:
@@ -133,12 +134,17 @@ class Provider:
                     continue
                 data = line[5:].strip()
                 if data == b"[DONE]":
+                    if finish_reason == "length":
+                        raise ProviderError("Model response reached its token limit")
                     return
                 try:
                     chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"]
+                    choice = chunk["choices"][0]
+                    delta = choice["delta"]
                 except (ValueError, KeyError, IndexError, TypeError):
                     continue
+                if choice.get("finish_reason") is not None:
+                    finish_reason = choice["finish_reason"]
                 if delta.get("tool_calls"):
                     raise ProviderError("Provider requested tools during final answer")
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
@@ -163,11 +169,12 @@ class Provider:
         parsed, conn = self._connection()
         body = json.dumps({
             "model": self.model, "messages": messages, "tools": tools,
-            "tool_choice": "auto", "stream": True, "temperature": 0.2, "max_tokens": 1536,
+            "tool_choice": "auto", "stream": True, "temperature": 0.2, "max_tokens": 3072,
         }).encode()
-        if len(body) > 65536:
+        if len(body) > 196608:
             raise ProviderError("Model request exceeded size limit")
         content, calls, total, done = [], {}, 0, False
+        finish_reason = None
         reasoning_size = 0
         saw_tools = False
         try:
@@ -192,9 +199,12 @@ class Provider:
                     done = True
                     break
                 try:
-                    delta = json.loads(data)["choices"][0]["delta"]
+                    choice = json.loads(data)["choices"][0]
+                    delta = choice["delta"]
                 except (ValueError, KeyError, IndexError, TypeError):
                     continue
+                if choice.get("finish_reason") is not None:
+                    finish_reason = choice["finish_reason"]
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                 if isinstance(reasoning, str) and on_reasoning is not None:
                     reasoning_size += len(reasoning)
@@ -230,6 +240,8 @@ class Provider:
                         raise ProviderError("Model tool call exceeded size limit")
             if not done:
                 raise ProviderError("Provider stream ended without completion marker")
+            if finish_reason == "length":
+                raise ProviderError("Model tool turn reached its token limit")
             ordered = [calls[index] for index in sorted(calls)]
             for call in ordered:
                 if not call["id"] or not call["function"]["name"]:

@@ -9,6 +9,7 @@ import { AssistantMarkdown } from './markdown';
 import { splitThinkTags } from './thinking';
 
 type Session = { id: string; title: string };
+const MAX_PROMPT_CHARS = 16000;
 type ChatMessage = { role: 'user' | 'assistant'; content: string; thinking?: string; updates?: string; tools?: Array<{ name: string; status: string; count: number }> };
 
 function ThinkingPanel({ content, active, showByDefault }: { content: string; active: boolean; showByDefault: boolean }) {
@@ -221,6 +222,7 @@ function Assistant({ core }: { core: CoreStart }) {
   async function send() {
     const content = prompt.trim();
     if (!content || busy) return;
+    if (content.length > MAX_PROMPT_CHARS) { setError(`Message is too long (${content.length}/${MAX_PROMPT_CHARS} characters). Shorten it before sending.`); return; }
     const previousMessageCount = messages.length;
     const lastMessage = messages[messages.length - 1];
     const retry = lastMessage?.role === 'user' && lastMessage.content === content;
@@ -441,7 +443,7 @@ function Assistant({ core }: { core: CoreStart }) {
         <div className="wlaFooter">
           <div className="wlaComposer">
             <label className="wlaVisuallyHidden" htmlFor="wla-prompt">Message</label>
-            <EuiTextArea id="wla-prompt" rows={3} placeholder="Ask a question…" value={prompt} maxLength={4000}
+            <EuiTextArea id="wla-prompt" rows={3} placeholder="Ask a question…" value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'ArrowUp' && !prompt && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
@@ -451,8 +453,11 @@ function Assistant({ core }: { core: CoreStart }) {
                 if (enterToSend && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
               }} />
             <div className="wlaComposerActions">
-              <span>{enterToSend ? 'Enter to send · Shift+Enter for a new line' : 'Use Send to submit'}</span>
-              <EuiButton className="wlaSend" size="s" fill onClick={send} isLoading={busy}>Send</EuiButton>
+              <span className={prompt.length > MAX_PROMPT_CHARS ? 'wlaOverLimit' : ''} aria-live="polite">{prompt.length > MAX_PROMPT_CHARS
+                ? `${prompt.length}/${MAX_PROMPT_CHARS} characters · Shorten to send`
+                : prompt.length > 14000 ? `${prompt.length}/${MAX_PROMPT_CHARS} characters`
+                  : enterToSend ? 'Enter to send · Shift+Enter for a new line' : 'Use Send to submit'}</span>
+              <EuiButton className="wlaSend" size="s" fill onClick={send} isLoading={busy} isDisabled={prompt.trim().length > MAX_PROMPT_CHARS}>Send</EuiButton>
             </div>
           </div>
           <p className="wlaScope">Read-only Wazuh tools · Results follow your signed-in permissions</p>
