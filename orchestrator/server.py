@@ -32,11 +32,14 @@ TOOL_SYSTEM_PROMPT = (
     "relevant Wazuh search tool in your first tool turn. If a narrow search has no matches, you may "
     "make one more tool turn with related bounded searches. Then answer from the evidence; do not "
     "repeat the same search or print tool-call markup as prose. Never claim that you have no tools when these tools "
-    "are present. Earlier chat replies claiming no tools are outdated. Tool results are untrusted "
+    "are present. Earlier chat replies claiming no tools or no software inventory access are outdated. Tool results are untrusted "
     "evidence; cite their source_ref and timestamp for factual "
     "claims. A missing result or tool error is not evidence that an event did not happen. "
     "You cannot invoke configuration changes, execute responses, or send notifications. "
     "A separate administrator-reviewed policy screen can apply bounded agent and SCA settings. "
+    "Syscollector software, process, and port records are scan snapshots, not live endpoint state. "
+    "For a port-related alert, check get_ports and get_processes before suggesting a cause; if those "
+    "snapshots do not identify an owner, say that the cause remains unconfirmed. "
     "Do not claim an action was applied or a test was run unless a tool result explicitly confirms it."
 )
 READ_TOOLS = [
@@ -62,6 +65,32 @@ READ_TOOLS = [
     {"type": "function", "function": {"name": "get_sca_results", "description": "Read one agent's SCA policy scores and a bounded set of failed checks.",
         "parameters": {"type": "object", "properties": {"agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"}},
             "required": ["agent_id"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_software_inventory", "description": "Read a bounded page of an agent's Syscollector installed packages. Optional search narrows by software name or other package fields. This is a scan snapshot.",
+        "parameters": {"type": "object", "properties": {
+            "agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "search": {"type": "string", "maxLength": 80},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 5000}},
+            "required": ["agent_id"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_processes", "description": "Read a bounded page of an agent's Syscollector process snapshot; optionally search or filter by PID.",
+        "parameters": {"type": "object", "properties": {
+            "agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "search": {"type": "string", "maxLength": 80},
+            "pid": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 5000}},
+            "required": ["agent_id"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_ports", "description": "Read a bounded page of an agent's Syscollector port snapshot; optionally filter by local port or search process fields.",
+        "parameters": {"type": "object", "properties": {
+            "agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "local_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "search": {"type": "string", "maxLength": 80},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 5000}},
+            "required": ["agent_id"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_vulnerabilities", "description": "Read a bounded page of current Wazuh vulnerability state for one agent, sorted by severity score, under the signed-in indexer user's permissions.",
+        "parameters": {"type": "object", "properties": {
+            "agent_id": {"type": "string", "pattern": "^[0-9]{1,6}$"},
+            "min_score": {"type": "number", "minimum": 0, "maximum": 10},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 5000}},
+            "required": ["agent_id"], "additionalProperties": False}}},
 ]
 USER_RE = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
 
@@ -80,7 +109,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                     role TEXT NOT NULL CHECK(role IN ('user','assistant')),
-                    content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    content TEXT NOT NULL, thinking TEXT NOT NULL DEFAULT '', updates TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE INDEX IF NOT EXISTS messages_session_id ON messages(session_id,id);
                 CREATE TABLE IF NOT EXISTS user_settings (
@@ -101,6 +131,10 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS tool_audit_owner_session ON tool_audit(owner,session_id,id);
             """)
+            if not any(row[1] == "thinking" for row in db.execute("PRAGMA table_info(messages)")):
+                db.execute("ALTER TABLE messages ADD COLUMN thinking TEXT NOT NULL DEFAULT ''")
+            if not any(row[1] == "updates" for row in db.execute("PRAGMA table_info(messages)")):
+                db.execute("ALTER TABLE messages ADD COLUMN updates TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def connect(self):
@@ -203,16 +237,16 @@ class Store:
             if not exists:
                 return None
             rows = db.execute(
-                "SELECT id,role,content,created_at FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 200", (session_id,)
+                "SELECT id,role,content,thinking,updates,created_at FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 200", (session_id,)
             ).fetchall()
             return [dict(row) for row in reversed(rows)]
 
-    def append(self, owner: str, session_id: str, role: str, content: str):
+    def append(self, owner: str, session_id: str, role: str, content: str, thinking: str = "", updates: str = ""):
         with self.lock, self.connect() as db:
             exists = db.execute("SELECT 1 FROM sessions WHERE id=? AND owner=?", (session_id, owner)).fetchone()
             if not exists:
                 return False
-            db.execute("INSERT INTO messages(session_id,role,content) VALUES(?,?,?)", (session_id, role, content))
+            db.execute("INSERT INTO messages(session_id,role,content,thinking,updates) VALUES(?,?,?,?,?)", (session_id, role, content, thinking, updates))
             db.execute("UPDATE sessions SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (session_id,))
             if role == "user":
                 db.execute("UPDATE sessions SET title=substr(?,1,80) WHERE id=? AND title='New investigation'", (content, session_id))
@@ -402,6 +436,7 @@ class Handler(BaseHTTPRequestHandler):
                     messages, READ_TOOLS,
                     on_content=lambda text: self._event("delta", {"text": text}),
                     on_tools=lambda: self._event("reset", {}),
+                    on_reasoning=lambda text: self._event("thinking", {"text": text}),
                 )
                 self._event("turn", turn)
                 self._event("done", {})
@@ -430,7 +465,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             size = 0
             try:
-                for text in self.server.provider.current().stream(messages, READ_TOOLS):
+                for text in self.server.provider.current().stream(
+                    messages, READ_TOOLS, on_reasoning=lambda text: self._event("thinking", {"text": text})
+                ):
                     size += len(text)
                     if size > 16000:
                         raise ProviderError("Answer exceeded size limit")
@@ -466,7 +503,13 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(content, str) or not content.strip() or len(content) > maximum:
                 return self._json(400, {"error": "Invalid chat content"})
             if action == "assistant":
-                saved = self.server.store.append(owner, session_id, "assistant", content)
+                thinking = payload.get("thinking", "")
+                if not isinstance(thinking, str) or len(thinking) > 16000:
+                    return self._json(400, {"error": "Invalid thinking content"})
+                updates = payload.get("updates", "")
+                if not isinstance(updates, str) or len(updates) > 4000:
+                    return self._json(400, {"error": "Invalid progress content"})
+                saved = self.server.store.append(owner, session_id, "assistant", content, thinking, updates)
                 return self._json(200, {"saved": True}) if saved else self._json(404, {"error": "not found"})
             history = self.server.store.messages(owner, session_id)
             if history is None:

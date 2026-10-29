@@ -15,15 +15,29 @@ async function main() {
   const context = { core: { opensearch: { client: { asCurrentUser: { transport: {
     request: async (request) => {
       searched = request;
+      if (request.path === '/wazuh-states-vulnerabilities-*/_search') return { body: { hits: { hits: [
+        { _index: 'wazuh-states-vulnerabilities-example', _id: 'cve-1', _source: {
+          agent: { id: '001' }, package: { name: 'example', version: '1.0' },
+          vulnerability: { id: 'CVE-2026-0001', severity: 'High', score: { base: 8.1 }, detected_at: '2026-01-01T00:00:00Z' },
+        } },
+      ] } } };
       return { body: { hits: { hits: [{ _index: 'wazuh-alerts-example', _id: 'abc',
         _source: { timestamp: '2026-01-01T00:00:00Z', rule: { id: '100100', level: 12 }, full_log: 'test' } }] } } };
     },
   } } } } } };
-  const managerRead = async (_context, route) => route === '/agents' ? [{ id: '001', name: 'demo', group: ['default'] }] : [];
+  let managerCall;
+  const managerRead = async (_context, route, params) => {
+    managerCall = { route, params };
+    if (route === '/agents') return [{ id: '001', name: 'demo', group: ['default'] }];
+    if (route.endsWith('/packages')) return [{ name: 'example', version: '1.0', scan: { time: '2026-01-01T00:00:00Z' } }];
+    if (route.endsWith('/processes')) return [{ pid: '42', name: 'example', euser: 'user' }];
+    if (route.endsWith('/ports')) return [{ local: { ip: '127.0.0.1', port: 55555 }, protocol: 'tcp', process: 'example' }];
+    return [];
+  };
 
   assert.equal(capabilities(false).policy_apply, false);
   const available = await executeReadTool(context, 'get_capabilities', '{}', false, managerRead);
-  assert.equal(available.data.read_tools.length, 4);
+  assert.equal(available.data.read_tools.length, 8);
   const alerts = await executeReadTool(context, 'search_alerts', '{"hours":24,"rule_id":"100100"}', false, managerRead);
   assert.equal(alerts.count, 1);
   assert.equal(alerts.data.records[0].source_ref, 'wazuh-alerts-example/abc');
@@ -34,11 +48,31 @@ async function main() {
   assert.equal(searched.path, '/wazuh-archives-*/_search');
   const agent = await executeReadTool(context, 'get_agent', '{"agent_id":"001"}', false, managerRead);
   assert.equal(agent.data.source_ref, 'agent:001');
+  const packages = await executeReadTool(context, 'get_software_inventory', '{"agent_id":"001","search":"example"}', false, managerRead);
+  assert.equal(managerCall.route, '/syscollector/001/packages');
+  assert.equal(managerCall.params.search, 'example');
+  assert.equal(packages.data.records[0].name, 'example');
+  const processes = await executeReadTool(context, 'get_processes', '{"agent_id":"001","pid":42}', false, managerRead);
+  assert.equal(managerCall.route, '/syscollector/001/processes');
+  assert.equal(managerCall.params.pid, '42');
+  assert.equal(processes.data.records[0].pid, '42');
+  const ports = await executeReadTool(context, 'get_ports', '{"agent_id":"001","local_port":55555}', false, managerRead);
+  assert.equal(managerCall.route, '/syscollector/001/ports');
+  assert.equal(managerCall.params.q, 'local.port=55555');
+  assert.equal(ports.data.records[0].local_port, 55555);
+  const vulnerabilities = await executeReadTool(context, 'get_vulnerabilities', '{"agent_id":"001","min_score":7}', false, managerRead);
+  assert.equal(searched.path, '/wazuh-states-vulnerabilities-*/_search');
+  assert.equal(searched.body.query.bool.filter[0].term['agent.id'], '001');
+  assert.equal(vulnerabilities.data.records[0].cve, 'CVE-2026-0001');
   await assert.rejects(() => executeReadTool(context, 'search_alerts', '{"hours":721}', false, managerRead));
   await assert.rejects(() => executeReadTool(context, 'search_alerts', '{"hours":24,"index":"*"}', false, managerRead));
   await assert.rejects(() => executeReadTool(context, 'get_agent', '{"agent_id":"../etc"}', false, managerRead));
+  await assert.rejects(() => executeReadTool(context, 'get_ports', '{"agent_id":"001","local_port":65536}', false, managerRead));
+  await assert.rejects(() => executeReadTool(context, 'get_vulnerabilities', '{"agent_id":"001","offset":5001}', false, managerRead));
   const denied = { core: { opensearch: { client: { asCurrentUser: { transport: { request: async () => { throw Object.assign(new Error('denied'), { statusCode: 403 }); } } } } } } };
   await assert.rejects(() => executeReadTool(denied, 'search_alerts', '{"hours":24}', false, managerRead), { statusCode: 403 });
+  await assert.rejects(() => executeReadTool(context, 'get_software_inventory', '{"agent_id":"001"}', false,
+    async () => { throw Object.assign(new Error('denied'), { statusCode: 403 }); }), { statusCode: 403 });
   process.stdout.write('read tool bounds, sources, and permission propagation: ok\n');
 }
 

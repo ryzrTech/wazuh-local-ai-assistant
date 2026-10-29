@@ -101,7 +101,7 @@ class Provider:
         finally:
             conn.close()
 
-    def stream(self, messages, tools=None):
+    def stream(self, messages, tools=None, on_reasoning=None):
         if not self.model:
             raise ProviderError("No model selected")
         parsed, conn = self._connection()
@@ -121,6 +121,7 @@ class Provider:
             if "text/event-stream" not in response.getheader("Content-Type", ""):
                 raise ProviderError("Provider did not return an event stream")
             total = 0
+            reasoning_size = 0
             while True:
                 line = response.readline(65537)
                 if not line:
@@ -140,6 +141,12 @@ class Provider:
                     continue
                 if delta.get("tool_calls"):
                     raise ProviderError("Provider requested tools during final answer")
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(reasoning, str) and on_reasoning is not None:
+                    reasoning_size += len(reasoning)
+                    if reasoning_size > 16000:
+                        raise ProviderError("Reasoning exceeded size limit")
+                    on_reasoning(reasoning)
                 text = delta.get("content")
                 if isinstance(text, str):
                     yield text
@@ -149,7 +156,7 @@ class Provider:
         finally:
             conn.close()
 
-    def complete_with_tools(self, messages, tools, on_content=None, on_tools=None):
+    def complete_with_tools(self, messages, tools, on_content=None, on_tools=None, on_reasoning=None):
         """Collect one bounded streamed assistant turn, including function calls."""
         if not self.model:
             raise ProviderError("No model selected")
@@ -161,6 +168,7 @@ class Provider:
         if len(body) > 65536:
             raise ProviderError("Model request exceeded size limit")
         content, calls, total, done = [], {}, 0, False
+        reasoning_size = 0
         saw_tools = False
         try:
             conn.request("POST", parsed.path.rstrip("/") + "/chat/completions", body=body, headers=self._headers())
@@ -187,6 +195,12 @@ class Provider:
                     delta = json.loads(data)["choices"][0]["delta"]
                 except (ValueError, KeyError, IndexError, TypeError):
                     continue
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(reasoning, str) and on_reasoning is not None:
+                    reasoning_size += len(reasoning)
+                    if reasoning_size > 16000:
+                        raise ProviderError("Reasoning exceeded size limit")
+                    on_reasoning(reasoning)
                 text = delta.get("content")
                 if isinstance(text, str):
                     content.append(text)

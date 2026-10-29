@@ -1,6 +1,6 @@
 # Wazuh local AI assistant
 
-Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSearch Dashboards plugin provides a chat sidebar and an AI investigations page. Chat can request bounded read-only searches of alerts, raw events, agents, and SCA results through the signed-in user's permissions. A separate reviewed administrator workflow can apply bounded agent/SCA settings; chat cannot apply changes or execute security responses.
+Self-hosted, OpenAI-compatible AI assistant for Wazuh 4.14.9. The native OpenSearch Dashboards plugin provides a chat sidebar and an AI investigations page. Chat can request bounded read-only searches of alerts, raw events, agents, SCA results, software inventory, process and port snapshots, and vulnerability state through the signed-in user's permissions. A separate reviewed administrator workflow can apply bounded agent/SCA settings; chat cannot apply changes or execute security responses.
 
 ## Milestone status
 

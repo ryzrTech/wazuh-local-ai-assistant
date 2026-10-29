@@ -1,6 +1,6 @@
 # Deploy the native sidebar
 
-This integration targets Wazuh 4.14.9 with OpenSearch Dashboards 2.19.6. Check installed versions before deploying. Chat and investigations read bounded Wazuh alerts, raw events, agents, and SCA results in the signed-in user's context. The model has no configuration write or response tools; a separate administrator-reviewed workflow can apply bounded agent/SCA settings. A model API key and valid model ID are required for AI replies; investigation browsing and conversation storage can run without them.
+This integration targets Wazuh 4.14.9 with OpenSearch Dashboards 2.19.6. Check installed versions before deploying. Chat and investigations read bounded Wazuh alerts, raw events, agents, SCA results, Syscollector inventory, and vulnerability state in the signed-in user's context. The model has no configuration write or response tools; a separate administrator-reviewed workflow can apply bounded agent/SCA settings. A model API key and valid model ID are required for AI replies; investigation browsing and conversation storage can run without them.
 
 ## Build
 
@@ -12,7 +12,7 @@ npm ci
 npm run build
 ```
 
-The build creates `server/index.js` and `target/public/wazuhAiChatGrounded.plugin.js`. It uses Dashboard's shared React and EUI libraries; no Dashboard source checkout is required. The build files are ignored by Git. Package only the manifest, package metadata, compiled server entry point, and public bundle for installation.
+The build creates `server/index.js` and `target/public/wazuhAiChatThinking.plugin.js`. It uses Dashboard's shared React and EUI libraries; no Dashboard source checkout is required. The build files are ignored by Git. Package only the manifest, package metadata, compiled server entry point, and public bundle for installation.
 
 ## Configure the service
 
@@ -31,13 +31,17 @@ Use the same proxy and admin tokens in a protected `EnvironmentFile` for the Das
 
 ## Activate the Dashboard plugin
 
-Place the compiled plugin in `plugins/wazuhAiChatGrounded` under the installed Dashboard root. The directory must contain `opensearch_dashboards.json`, `package.json`, `server/index.js`, and `target/public/wazuhAiChatGrounded.plugin.js`. Add the protected proxy and admin tokens to the Dashboard systemd environment, then restart Dashboard. Confirm the plugin appears in `opensearch-dashboards-plugin list --allow-root`, startup logs include `wazuhAiChatGrounded`, and the HTTPS entry page responds. Verify the sidebar in an authenticated session. Provider setup requires the `all_access` role by default; `ASSISTANT_ADMIN_ROLES` can define other indexer roles.
+Place the compiled plugin in `plugins/wazuhAiChatThinking` under the installed Dashboard root. The directory must contain `opensearch_dashboards.json`, `package.json`, `server/index.js`, and `target/public/wazuhAiChatThinking.plugin.js`. Add the protected proxy and admin tokens to the Dashboard systemd environment, then restart Dashboard. Confirm the plugin appears in `opensearch-dashboards-plugin list --allow-root`, startup logs include `wazuhAiChatThinking`, and the HTTPS entry page responds. Verify the sidebar in an authenticated session. Provider setup requires the `all_access` role by default; `ASSISTANT_ADMIN_ROLES` can define other indexer roles.
 
-The Dashboard distribution serves plugin JavaScript with a one-year browser cache lifetime. Deployments that reuse an existing plugin ID and asset path may leave users on the old UI even after a service restart. Use a fresh plugin asset path for a forced update, or have users explicitly clear the cached plugin asset. The current `wazuhAiChatGrounded` ID uses a fresh asset path.
+The Dashboard distribution serves plugin JavaScript with a one-year browser cache lifetime. Deployments that reuse an existing plugin ID and asset path may leave users on the old UI even after a service restart. Use a fresh plugin asset path for a forced update, or have users explicitly clear the cached plugin asset. The current `wazuhAiChatThinking` ID uses a fresh asset path.
 
 In sidebar settings, an administrator enters an approved `/v1` API URL and dedicated key, tests the connection, selects a returned model, and saves. The key is stored in a mode 0600 server file and is never returned to the browser. Changing allowlisted hosts or service tokens requires a service restart. Conversation retention and deletion are per user. See [investigations.md](investigations.md) for raw-event archiving and retention setup.
 
 Assistant replies and saved investigation analyses render Markdown for headings, lists, emphasis, links, and code. Raw HTML and Markdown images are displayed as text, so model output cannot create HTML elements or trigger image requests. User messages remain plain text.
+
+When the provider emits `reasoning_content` or `reasoning` chunks, the assistant streams them into an expandable **Thinking…** section and stores them with the owner-scoped conversation. Literal `<think>...</think>` content is also separated from the visible answer. **Show thinking by default** is a browser-local preference; otherwise each section starts collapsed. The provider may omit thinking entirely. Chat history deletion and retention remove stored thinking along with its message. Thinking is not sent back to the model as conversation history.
+
+Text emitted before a tool call stays visible as an **Investigation updates** note and is saved with the answer. Syscollector package, process, and port records are scan snapshots, so a missing port or process cannot establish what owned a port when an earlier alert fired. Vulnerabilities come from the current `wazuh-states-vulnerabilities-*` index and may require additional signed-in user permissions.
 
 Chat responses stream into the panel as model text arrives. The transcript stays at the newest message during a turn. With an empty composer, Up Arrow recalls the last question from the active conversation. If a model request fails after saving the question, sending that same question again resumes the unanswered turn without storing a duplicate user message. The model can make two bounded read-tool rounds, with at most eight actual read calls, before a final answer; searches stay under the signed-in user's Wazuh permissions.
 

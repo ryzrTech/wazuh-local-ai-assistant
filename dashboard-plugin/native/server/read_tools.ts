@@ -24,11 +24,22 @@ function conciseSource(source: any) {
   };
 }
 
+function inventoryArgs(raw: string, keys: string[]) {
+  const args = objectArgs(raw, ['agent_id', 'offset', ...keys]);
+  if (typeof args.agent_id !== 'string' || !AGENT_ID.test(args.agent_id)) throw new Error('Invalid agent ID');
+  if (args.offset !== undefined && (!Number.isInteger(args.offset) || args.offset < 0 || args.offset > 5000)) throw new Error('Invalid inventory offset');
+  if (args.search !== undefined && (typeof args.search !== 'string' || args.search.length > 80 || /[\x00-\x1f\x7f]/.test(args.search))) throw new Error('Invalid inventory search');
+  return args;
+}
+
+const short = (value: unknown, limit = 120) => String(value ?? '').slice(0, limit);
+
 export function capabilities(admin: boolean) {
   return {
-    read_tools: ['search_alerts', 'search_raw_events', 'get_agent', 'get_sca_results'],
+    read_tools: ['search_alerts', 'search_raw_events', 'get_agent', 'get_sca_results',
+      'get_software_inventory', 'get_processes', 'get_ports', 'get_vulnerabilities'],
     scope: 'Read-only Wazuh data through the signed-in user’s permissions',
-    limits: { search_hours: 720, search_results: 10, raw_event_retention_days: 30 },
+    limits: { search_hours: 720, search_results: 10, inventory_results: 10, inventory_offset_max: 5000, raw_event_retention_days: 30 },
     policy_validation: admin ? 'Agent and SCA group-setting proposals can be syntax-checked in AI investigations' : 'Administrator access required',
     reviewed_policy_ui: admin ? 'Agent and SCA group settings can be applied or rolled back only after explicit review in AI investigations' : 'Administrator access required',
     policy_apply: false, active_response: false, arbitrary_commands: false,
@@ -99,6 +110,61 @@ export async function executeReadTool(context: any, name: string, rawArgs: strin
       policies: policies.map((policy: any) => ({ policy_id: String(policy.policy_id || '').slice(0, 128),
         name: String(policy.name || '').slice(0, 120), score: policy.score, pass: policy.pass, fail: policy.fail,
         end_scan: policy.end_scan })), failed_checks: failed } };
+  }
+  if (name === 'get_software_inventory' || name === 'get_processes' || name === 'get_ports') {
+    const args = inventoryArgs(rawArgs, name === 'get_ports' ? ['local_port', 'search'] : name === 'get_processes' ? ['pid', 'search'] : ['search']);
+    if (args.local_port !== undefined && (!Number.isInteger(args.local_port) || args.local_port < 1 || args.local_port > 65535)) throw new Error('Invalid port');
+    if (args.pid !== undefined && (!Number.isInteger(args.pid) || args.pid < 0 || args.pid > 2147483647)) throw new Error('Invalid PID');
+    const kind = name === 'get_software_inventory' ? 'packages' : name === 'get_processes' ? 'processes' : 'ports';
+    const params: Record<string, unknown> = { limit: 11, offset: args.offset || 0 };
+    if (args.search) params.search = args.search;
+    if (args.pid !== undefined) params.pid = String(args.pid);
+    if (args.local_port !== undefined) params.q = `local.port=${args.local_port}`;
+    const items = await managerRead(context, `/syscollector/${args.agent_id}/${kind}`, params);
+    const records = items.slice(0, 10).map((item: any, index: number) => {
+      const source_ref = `agent:${args.agent_id}/syscollector:${kind}/${(args.offset || 0) + index}`;
+      const scan_time = short(item.scan?.time, 40);
+      if (kind === 'packages') return { source_ref, scan_time, name: short(item.name), version: short(item.version),
+        vendor: short(item.vendor), architecture: short(item.architecture, 40), description: short(item.description, 180),
+        location: short(item.location, 180), install_time: short(item.install_time, 40) };
+      if (kind === 'processes') return { source_ref, scan_time, pid: item.pid, ppid: item.ppid,
+        name: short(item.name), cmd: short(item.cmd, 180), user: short(item.euser || item.ruser, 80),
+        state: short(item.state, 40), start_time: short(item.start_time, 40) };
+      return { source_ref, scan_time, protocol: short(item.protocol, 24), state: short(item.state, 40),
+        local_ip: short(item.local?.ip, 80), local_port: item.local?.port, remote_ip: short(item.remote?.ip, 80),
+        remote_port: item.remote?.port, pid: item.pid, process: short(item.process) };
+    });
+    return { arguments: args, count: records.length, data: { retrieved_at: new Date().toISOString(),
+      source_ref: `agent:${args.agent_id}`, inventory: kind, offset: args.offset || 0,
+      more_available: items.length > 10, note: 'Syscollector data is a scan snapshot, not a live endpoint query.', records } };
+  }
+  if (name === 'get_vulnerabilities') {
+    const args = inventoryArgs(rawArgs, ['min_score']);
+    if (args.min_score !== undefined && (typeof args.min_score !== 'number' || !Number.isFinite(args.min_score) || args.min_score < 0 || args.min_score > 10)) throw new Error('Invalid minimum score');
+    const filter: any[] = [{ term: { 'agent.id': args.agent_id } }];
+    if (args.min_score !== undefined) filter.push({ range: { 'vulnerability.score.base': { gte: args.min_score } } });
+    const result = await context.core.opensearch.client.asCurrentUser.transport.request({
+      method: 'POST', path: '/wazuh-states-vulnerabilities-*/_search', body: {
+        from: args.offset || 0, size: 11, track_total_hits: false, timeout: '5s',
+        sort: [{ 'vulnerability.score.base': { order: 'desc', missing: '_last' } },
+          { 'vulnerability.detected_at': { order: 'desc', missing: '_last' } }],
+        _source: ['agent.id', 'package.name', 'package.version', 'vulnerability.id', 'vulnerability.severity',
+          'vulnerability.score.base', 'vulnerability.description', 'vulnerability.detected_at', 'vulnerability.reference'],
+        query: { bool: { filter } },
+      },
+    });
+    const hits = (result.body || result).hits?.hits || [];
+    const records = hits.slice(0, 10).map((hit: any) => {
+      const source = hit._source || {};
+      return { source_ref: `${short(hit._index, 128)}/${short(hit._id, 256)}`,
+        agent_id: short(source.agent?.id, 12), cve: short(source.vulnerability?.id, 80),
+        severity: short(source.vulnerability?.severity, 40), score: source.vulnerability?.score?.base,
+        detected_at: short(source.vulnerability?.detected_at, 40),
+        package: short(source.package?.name), version: short(source.package?.version),
+        description: short(source.vulnerability?.description, 300), reference: short(source.vulnerability?.reference, 180) };
+    });
+    return { arguments: args, count: records.length, data: { retrieved_at: new Date().toISOString(),
+      offset: args.offset || 0, more_available: hits.length > 10, records } };
   }
   throw new Error('Unsupported read tool');
 }

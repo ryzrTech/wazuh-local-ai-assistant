@@ -208,25 +208,34 @@ async function readModelStream(owner: string, path: string, messages: any[], onE
   if (!completed) throw new Error('Model stream ended early');
 }
 
-async function streamModelTurn(owner: string, messages: any[], stream: PassThrough): Promise<{ turn: any; clean: boolean }> {
+async function streamModelTurn(owner: string, messages: any[], stream: PassThrough, onThinking: (text: string) => void, onProgress: (text: string) => void): Promise<{ turn: any; clean: boolean }> {
   let turn: any;
   let contentSize = 0;
+  let provisional = '';
   const gate = textGate(stream);
   await readModelStream(owner, '/api/model/complete-stream', messages, (event, payload) => {
     if (event === 'delta') {
       if (typeof payload.text !== 'string') throw new Error('Invalid model stream');
       contentSize += payload.text.length;
       if (contentSize > 16000) throw new Error('Model answer exceeded limit');
+      provisional += payload.text;
       gate.push(payload.text);
     }
-    if (event === 'reset') gate.reset();
+    // The provider resets its provisional answer on a tool call. Keep that text
+    // visible until the tool turn completes, then move it into saved progress.
+    if (event === 'thinking' && typeof payload.text === 'string') onThinking(payload.text);
     if (event === 'turn') turn = payload;
   });
   if (!turn || typeof turn.content !== 'string' || !Array.isArray(turn.tool_calls)) throw new Error('Invalid model turn');
-  return { turn, clean: gate.finish() };
+  const clean = gate.finish();
+  if (turn.tool_calls.length) {
+    if (clean && provisional.trim()) onProgress(provisional.trim());
+    sendEvent(stream, 'reset', {});
+  }
+  return { turn, clean };
 }
 
-async function streamFinalAnswer(owner: string, messages: any[], stream: PassThrough): Promise<string | null> {
+async function streamFinalAnswer(owner: string, messages: any[], stream: PassThrough, onThinking: (text: string) => void): Promise<string | null> {
   let answer = '';
   const gate = textGate(stream);
   await readModelStream(owner, '/api/model/stream', messages, (event, payload) => {
@@ -236,24 +245,46 @@ async function streamFinalAnswer(owner: string, messages: any[], stream: PassThr
       if (answer.length > 16000) throw new Error('Model answer exceeded limit');
       gate.push(payload.text);
     }
+    if (event === 'thinking' && typeof payload.text === 'string') onThinking(payload.text);
   });
   if (!answer.trim()) throw new Error('Empty model answer');
   return gate.finish() ? answer : null;
 }
 
 async function chatWithTools(context: any, owner: string, admin: boolean, sessionId: string, content: string, retry: boolean, stream: PassThrough) {
-  const allowed = new Set(['get_capabilities', 'search_alerts', 'search_raw_events', 'get_agent', 'get_sca_results']);
+  const allowed = new Set(['get_capabilities', 'search_alerts', 'search_raw_events', 'get_agent', 'get_sca_results',
+    'get_software_inventory', 'get_processes', 'get_ports', 'get_vulnerabilities']);
   let stage = 'prepare';
   try {
     const prepared = await proxyJson('POST', `/api/sessions/${sessionId}/turn`, owner, { content, retry });
     if (prepared.status !== 200 || !Array.isArray(prepared.data.messages)) throw new Error('Could not prepare chat');
     const messages: any[] = prepared.data.messages;
     const observations: ToolObservation[] = [];
+    let thinking = '';
+    let updates = '';
+    let lastProgress = '';
+    const onThinking = (text: string) => {
+      const room = 16000 - thinking.length;
+      if (room <= 0) return;
+      const chunk = text.slice(0, room);
+      thinking += chunk;
+      sendEvent(stream, 'thinking', { text: chunk });
+    };
+    const onProgress = (text: string) => {
+      if (text === lastProgress) return;
+      lastProgress = text;
+      const room = 4000 - updates.length;
+      if (room <= 0) return;
+      const chunk = (updates ? '\n\n' : '') + text;
+      const accepted = chunk.slice(0, room);
+      updates += accepted;
+      sendEvent(stream, 'progress', { text: accepted });
+    };
     let callsUsed = 0;
     let answer: string | null = null;
     for (let round = 0; round < 2; round++) {
       stage = 'model';
-      const { turn, clean } = await streamModelTurn(owner, messages, stream);
+      const { turn, clean } = await streamModelTurn(owner, messages, stream, onThinking, onProgress);
       if (!turn.tool_calls.length) {
         answer = clean && turn.content.trim() ? turn.content : groundedFallback(observations, clean ? 'empty' : 'tool_markup');
         if (!clean || !turn.content.trim()) sendEvent(stream, 'delta', { text: answer });
@@ -302,7 +333,7 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
       stage = 'stream';
       messages.push({ role: 'system', content: 'Final answer only. No further tools are available. Do not print tool-call syntax, XML function tags, or planned searches. Describe only searches that actually ran and state the limits of negative results.' });
       try {
-        answer = await streamFinalAnswer(owner, messages, stream);
+        answer = await streamFinalAnswer(owner, messages, stream, onThinking);
       } catch (error) {
         console.warn('[wazuh-local-ai] final model answer unavailable', { reason: error instanceof Error ? error.message : 'unknown' });
         sendEvent(stream, 'reset', {});
@@ -315,7 +346,7 @@ async function chatWithTools(context: any, owner: string, admin: boolean, sessio
       }
     }
     stage = 'save';
-    const saved = await proxyJson('POST', `/api/sessions/${sessionId}/assistant`, owner, { content: answer });
+    const saved = await proxyJson('POST', `/api/sessions/${sessionId}/assistant`, owner, { content: answer, thinking, updates });
     if (saved.status !== 200) throw new Error('Could not save answer');
     sendEvent(stream, 'done', {});
     stream.end();

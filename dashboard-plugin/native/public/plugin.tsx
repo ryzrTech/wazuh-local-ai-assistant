@@ -6,15 +6,30 @@ import sidebarCss from './sidebar.css';
 import investigationsCss from './investigations.css';
 import { Investigations } from './investigations';
 import { AssistantMarkdown } from './markdown';
+import { splitThinkTags } from './thinking';
 
 type Session = { id: string; title: string };
-type ChatMessage = { role: 'user' | 'assistant'; content: string; tools?: Array<{ name: string; status: string; count: number }> };
+type ChatMessage = { role: 'user' | 'assistant'; content: string; thinking?: string; updates?: string; tools?: Array<{ name: string; status: string; count: number }> };
+
+function ThinkingPanel({ content, active, showByDefault }: { content: string; active: boolean; showByDefault: boolean }) {
+  const [expanded, setExpanded] = useState(showByDefault);
+  useEffect(() => { setExpanded(showByDefault); }, [showByDefault]);
+  return <div className="wlaThinking">
+    <button type="button" className="wlaThinkingToggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+      <span className={'wlaThinkingChevron' + (expanded ? ' isOpen' : '')} aria-hidden="true">▸</span>
+      <span>Thinking…</span>
+      {active && <span className="wlaThinkingPulse" aria-label="In progress" />}
+    </button>
+    {expanded && <div className="wlaThinkingBody" aria-live="off"><AssistantMarkdown content={content || 'Thinking…'} /></div>}
+  </div>;
+}
 
 function Assistant({ core }: { core: CoreStart }) {
   const [open, setOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [enterToSend, setEnterToSend] = useState(() => localStorage.getItem('wla-enter-to-send') !== 'false');
   const [compact, setCompact] = useState(() => localStorage.getItem('wla-compact') === 'true');
+  const [showThinking, setShowThinking] = useState(() => localStorage.getItem('wla-show-thinking') === 'true');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -46,6 +61,7 @@ function Assistant({ core }: { core: CoreStart }) {
 
   useEffect(() => { localStorage.setItem('wla-enter-to-send', String(enterToSend)); }, [enterToSend]);
   useEffect(() => { localStorage.setItem('wla-compact', String(compact)); }, [compact]);
+  useEffect(() => { localStorage.setItem('wla-show-thinking', String(showThinking)); }, [showThinking]);
 
   async function api(path: string, options: RequestInit = {}) {
     const result = await fetch(endpoint(path), {
@@ -67,7 +83,7 @@ function Assistant({ core }: { core: CoreStart }) {
     if (!id) { setSessionId(''); setMessages([]); return [] as ChatMessage[]; }
     const data = await api(`/sessions/${id}/messages`);
     setSessionId(id);
-    setMessages(data.messages.map((item: ChatMessage) => ({ role: item.role, content: item.content })));
+    setMessages(data.messages.map((item: ChatMessage) => ({ role: item.role, content: item.content, thinking: item.thinking || '', updates: item.updates || '' })));
     return data.messages as ChatMessage[];
   }
 
@@ -240,6 +256,18 @@ function Assistant({ core }: { core: CoreStart }) {
             copy[copy.length - 1] = { ...last, content: last.content + payload.text };
             return copy;
           });
+          if (event === 'thinking') setMessages((current) => {
+            const copy = [...current];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, thinking: (last.thinking || '') + payload.text };
+            return copy;
+          });
+          if (event === 'progress') setMessages((current) => {
+            const copy = [...current];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, updates: (last.updates || '') + payload.text };
+            return copy;
+          });
           if (event === 'reset') setMessages((current) => {
             const copy = [...current];
             const last = copy[copy.length - 1];
@@ -290,6 +318,10 @@ function Assistant({ core }: { core: CoreStart }) {
         <label className="wlaSettingRow">
           <span><strong>Compact messages</strong><small>Reduce spacing in the conversation.</small></span>
           <input type="checkbox" checked={compact} onChange={(event) => setCompact(event.target.checked)} />
+        </label>
+        <label className="wlaSettingRow">
+          <span><strong>Show thinking by default</strong><small>Expand model thinking in each reply. Turn off to keep it collapsed.</small></span>
+          <input type="checkbox" checked={showThinking} onChange={(event) => setShowThinking(event.target.checked)} />
         </label>
         <div className="wlaSettingsSection">
           <h4>Model connection</h4>
@@ -386,14 +418,24 @@ function Assistant({ core }: { core: CoreStart }) {
             <span className="wlaEmptyMark" aria-hidden="true">✦</span>
             <h3>How can I help?</h3>
             <p>Ask me to search Wazuh alerts, raw events, agents, or SCA results.</p>
-          </div> : messages.map((item, index) =>
-            <article key={index} className={'wlaMessage wla-' + item.role}>
+          </div> : messages.map((item, index) => {
+            const parsed = item.role === 'assistant' ? splitThinkTags(item.content) : null;
+            const parsedUpdates = item.role === 'assistant' ? splitThinkTags(item.updates || '') : null;
+            const thinking = [item.thinking, parsedUpdates?.thinking, parsed?.thinking].filter(Boolean).join('\n\n');
+            const answering = parsed?.answer || '';
+            const thinkingActive = busy && index === messages.length - 1 && !answering.trim();
+            return <article key={`${sessionId}:${index}`} className={'wlaMessage wla-' + item.role}>
               <strong>{item.role === 'user' ? 'You' : 'Assistant'}</strong>
               {!!item.tools?.length && <div className="wlaToolTrace" aria-label="Wazuh tools used">
                 {item.tools.map((tool, toolIndex) => <span key={toolIndex}>{tool.name.replace(/_/g, ' ')} · {tool.status === 'ok' ? `${tool.count} result${tool.count === 1 ? '' : 's'}` : tool.status}</span>)}
               </div>}
-              <div>{item.content ? (item.role === 'assistant' ? <AssistantMarkdown content={item.content} /> : item.content) : (busy ? <EuiLoadingSpinner size="s" /> : '')}</div>
-            </article>)}
+              {item.role === 'assistant' && (thinking || parsed?.active || parsedUpdates?.active) &&
+                <ThinkingPanel content={thinking} active={thinkingActive} showByDefault={showThinking} />}
+              {item.role === 'assistant' && !!parsedUpdates?.answer.trim() && <div className="wlaProgress">
+                <span>Investigation updates</span><AssistantMarkdown content={parsedUpdates.answer} />
+              </div>}
+              <div>{item.role === 'assistant' ? (answering ? <AssistantMarkdown content={answering} /> : (!thinking && busy ? <EuiLoadingSpinner size="s" /> : '')) : item.content}</div>
+            </article>})}
         </div>
         {error && <div className="wlaError" role="alert">{error}</div>}
         <div className="wlaFooter">

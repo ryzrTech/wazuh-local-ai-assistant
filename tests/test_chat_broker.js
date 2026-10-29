@@ -16,7 +16,9 @@ async function main() {
   let searched = false;
   let audited = false;
   let saved = false;
+  let savedUpdates = false;
   let savedConcept = false;
+  let savedConceptThinking = false;
   let savedMalware = '';
   const malwareSearches = [];
   let toolResultSeen = false;
@@ -42,6 +44,8 @@ async function main() {
       }
       if (payload.messages.some((item) => item.role === 'user' && item.content === 'Explain concept')) {
         response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.write('event: thinking\ndata: {"text":"Check the concept first. "}\n\n');
+        response.write('event: thinking\ndata: {"text":"Then explain."}\n\n');
         response.write('event: delta\ndata: {"text":"Concept "}\n\n');
         response.write('event: delta\ndata: {"text":"explained."}\n\n');
         response.write('event: turn\ndata: {"content":"Concept explained.","tool_calls":[]}\n\n');
@@ -69,7 +73,7 @@ async function main() {
       setTimeout(() => { response.write('event: delta\ndata: {"text":"[wazuh-alerts-example/abc]."}\n\n'); response.end('event: done\ndata: {}\n\n'); }, 10);
       return;
     } else if (request.url.endsWith('/tool-audit')) { audited = payload.name === 'search_alerts' && payload.count === 1; result = { saved: true }; }
-    else if (request.url.endsWith('/assistant')) { saved ||= payload.content.includes('One alert found'); savedConcept ||= payload.content === 'Concept explained.'; if (payload.content.includes('Completed Wazuh searches')) savedMalware = payload.content; result = { saved: true }; }
+    else if (request.url.endsWith('/assistant')) { if (payload.content.includes('One alert found')) assert.equal(payload.updates, 'Searching…'); saved ||= payload.content.includes('One alert found'); savedUpdates ||= payload.content.includes('One alert found') && payload.updates === 'Searching…'; savedConcept ||= payload.content === 'Concept explained.'; savedConceptThinking ||= payload.content === 'Concept explained.' && payload.thinking === 'Check the concept first. Then explain.'; if (payload.content.includes('Completed Wazuh searches')) savedMalware = payload.content; result = { saved: true }; }
     else { response.writeHead(404); response.end('{}'); return; }
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(result));
@@ -104,19 +108,22 @@ async function main() {
     const stream = output.join('');
     assert.match(stream, /event: tool/);
     assert.match(stream, /event: reset/);
+    assert.match(stream, /event: progress\ndata: \{"text":"Searching…"\}/);
     assert.match(stream, /event: done/);
     assert.match(stream, /One alert found/);
-    assert.equal((stream.match(/event: delta/g) || []).length, 2);
+    assert.equal((stream.slice(stream.lastIndexOf('event: reset')).match(/event: delta/g) || []).length, 2);
     assert.equal(modelCalls, 2);
-    assert.equal(searched && audited && saved && toolResultSeen, true);
+    assert.deepEqual({ searched, audited, saved, savedUpdates, toolResultSeen },
+      { searched: true, audited: true, saved: true, savedUpdates: true, toolResultSeen: true });
     const concept = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Explain concept' } }, response);
     const conceptOutput = [];
     for await (const chunk of concept.body) conceptOutput.push(chunk.toString());
     const conceptStream = conceptOutput.join('');
     assert.equal((conceptStream.match(/event: delta/g) || []).length, 2);
+    assert.equal((conceptStream.match(/event: thinking/g) || []).length, 2);
     assert.doesNotMatch(conceptStream, /event: reset/);
     assert.match(conceptStream, /event: done/);
-    assert.equal(savedConcept, true);
+    assert.equal(savedConcept && savedConceptThinking, true);
     const malware = await handler(context, { params: { id: '12345678-1234-1234-1234-123456789abc' }, body: { content: 'Malware probe' } }, response);
     const malwareOutput = [];
     for await (const chunk of malware.body) malwareOutput.push(chunk.toString());

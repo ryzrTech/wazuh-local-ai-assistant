@@ -39,6 +39,15 @@ class FakeProvider(BaseHTTPRequestHandler):
                     delta = {"choices": [{"delta": {"tool_calls": [{"index": index, "id": f"call_{index}",
                         "type": "function", "function": {"name": "search_alerts", "arguments": '{"hours":24}'}}]}}]}
                     self.wfile.write(("data: " + json.dumps(delta) + "\n\n").encode())
+            elif any(message.get("content") == "Think aloud" for message in request["messages"]):
+                if request.get("tool_choice") == "none":
+                    self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"Review evidence. "}}]}\n\n')
+                    self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"Answer concisely."}}]}\n\n')
+                    self.wfile.write(b'data: {"choices":[{"delta":{"content":"Final answer."}}]}\n\n')
+                else:
+                    self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"Check the scope first. "}}]}\n\n')
+                    self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"Then answer."}}]}\n\n')
+                    self.wfile.write(b'data: {"choices":[{"delta":{"content":"Scoped answer."}}]}\n\n')
             elif any(message.get("content") == "Just explain" for message in request["messages"]):
                 self.wfile.write(b'data: {"choices":[{"delta":{"content":"This "}}]}\n\n')
                 self.wfile.flush()
@@ -49,6 +58,12 @@ class FakeProvider(BaseHTTPRequestHandler):
                 self.wfile.write(b'data: {"choices":[{"delta":{"content":"Checking now."}}]}\n\n')
                 self.wfile.write(b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search_alerts","arguments":"{\\\"hours\\\":24"}}]}}]}\n\n')
                 self.wfile.write(b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\\\"rule_id\\\":\\\"100100\\\"}"}}]}}]}\n\n')
+            self.wfile.write(b'data: [DONE]\n\n')
+            return
+        if any(message.get("content") == "Think aloud" for message in request["messages"]):
+            self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"Review evidence. "}}]}\n\n')
+            self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"Answer concisely."}}]}\n\n')
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"Final answer."}}]}\n\n')
             self.wfile.write(b'data: [DONE]\n\n')
             return
         self.wfile.write(b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n')
@@ -169,6 +184,46 @@ class Milestone2Tests(unittest.TestCase):
     def test_provider_accepts_bounded_multi_search_turn(self):
         turn = self.adapter.complete_with_tools([{"role": "user", "content": "Five searches"}], READ_TOOLS)
         self.assertEqual(len(turn["tool_calls"]), 5)
+
+    def test_thinking_stream_and_owner_scoped_history(self):
+        messages = [{"role": "user", "content": "Think aloud"}]
+        status, stream = self.request("POST", "/api/model/complete-stream", {"messages": messages})
+        self.assertEqual(status, 200)
+        self.assertIn(b'event: thinking', stream)
+        self.assertIn(b'Check the scope first.', stream)
+        self.assertIn(b'event: delta', stream)
+        self.assertIn(b'Scoped answer.', stream)
+        status, stream = self.request("POST", "/api/model/stream", {"messages": messages})
+        self.assertEqual(status, 200)
+        self.assertIn(b'event: thinking', stream)
+        self.assertIn(b'Review evidence.', stream)
+        self.assertIn(b'Final answer.', stream)
+        sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]
+        status, _ = self.request("POST", f"/api/sessions/{sid}/assistant", {
+            "content": "Final answer.", "thinking": "Review evidence. Answer concisely.", "updates": "I will check the records.",
+        })
+        self.assertEqual(status, 200)
+        status, payload = self.request("GET", f"/api/sessions/{sid}/messages")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["messages"][0]["thinking"], "Review evidence. Answer concisely.")
+        self.assertEqual(json.loads(payload)["messages"][0]["updates"], "I will check the records.")
+        self.assertEqual(self.request("GET", f"/api/sessions/{sid}/messages", owner="other")[0], 404)
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/assistant", {
+            "content": "Answer", "thinking": "x" * 16001,
+        })[0], 400)
+        self.assertEqual(self.request("POST", f"/api/sessions/{sid}/assistant", {
+            "content": "Answer", "updates": "x" * 4001,
+        })[0], 400)
+
+    def test_existing_message_table_gains_thinking_column(self):
+        legacy = Path(self.temp.name) / "legacy.sqlite"
+        with sqlite3.connect(legacy) as db:
+            db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        upgraded = Store(str(legacy))
+        with upgraded.connect() as db:
+            columns = [row[1] for row in db.execute("PRAGMA table_info(messages)")]
+        self.assertIn("thinking", columns)
+        self.assertIn("updates", columns)
 
     def test_cross_user_and_auth_denied(self):
         sid = json.loads(self.request("POST", "/api/sessions")[1])["id"]
